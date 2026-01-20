@@ -1,0 +1,735 @@
+// ==================== FIXED QoE DASHBOARD WITH DATE FILTERING ====================
+// components/QoEDashboard.jsx
+
+import React, { useState, useEffect, useRef } from 'react';
+import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { TrendingUp, Users, AlertTriangle, Zap, Download, RefreshCw, Calendar } from 'lucide-react';
+
+const QoEDashboard = () => {
+  const [dashboardData, setDashboardData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const today = new Date().toISOString().split('T')[0];
+  const [dateRange, setDateRange] = useState({
+    start: today,
+    end: today
+  });
+  const [appliedDateRange, setAppliedDateRange] = useState({
+    start: today,
+    end: today
+  });
+  const [selectedVideo, setSelectedVideo] = useState('all');
+  const [filters, setFilters] = useState({
+    userId: '',
+    videoId: ''
+  });
+  const [appliedFilters, setAppliedFilters] = useState({
+    userId: '',
+    videoId: ''
+  });
+  const API_BASE_URL = import.meta.env.VITE_API_BASE || '';
+
+  // Refs for auto-scroll navigation
+  const errorsSectionRef = useRef(null);
+  const usersSectionRef = useRef(null);
+  const completionSectionRef = useRef(null);
+
+  const scrollToSection = (ref) => {
+    if (ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  // ==================== FETCH ANALYTICS WITH DATE FILTER ====================
+  const fetchDashboardData = async (
+    startDate = dateRange.start,
+    endDate = dateRange.end,
+    userId = filters.userId,
+    videoId = filters.videoId
+  ) => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const params = new URLSearchParams();
+
+      // Validate and add dates
+      if (startDate) params.append('startDate', startDate);
+      if (endDate) params.append('endDate', endDate);
+
+      // Use the passed values instead of reading from state
+      if (userId && userId !== 'all') params.append('userId', userId);
+      if (videoId && videoId !== 'all') params.append('videoId', videoId);
+
+      const queryString = params.toString();
+      const url = `${API_BASE_URL}/api/qoe/analytics${queryString ? `?${queryString}` : ''}`;
+
+      console.log('📊 Fetching analytics from:', url);
+      console.log('📅 Filters applied:', { startDate, endDate, userId, videoId });
+
+      const response = await fetch(url);
+      const result = await response.json();
+
+      if (result.success) {
+        setDashboardData(result.data);
+        setAppliedDateRange({ start: startDate, end: endDate });
+        setAppliedFilters({ userId, videoId });
+        console.log('✅ Analytics fetched:', result.data);
+        console.log('📊 Date range in response:', result.data.dateRange);
+      } else {
+        setError('Failed to fetch dashboard data: ' + result.error);
+      }
+    } catch (err) {
+      setError('Error connecting to API: ' + err.message);
+      console.error('❌ API Error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch initial data on component mount
+  useEffect(() => {
+    fetchDashboardData(dateRange.start, dateRange.end, filters.userId, filters.videoId);
+    document.title = "Consolidated QoE Dashboard";
+  }, []);
+
+  // ==================== HANDLE APPLY FILTERS ====================
+  const handleApplyFilters = () => {
+    if (!dateRange.start && !dateRange.end) {
+      alert('⚠️ Please select at least one date');
+      return;
+    }
+
+    if (dateRange.start && dateRange.end) {
+      const start = new Date(dateRange.start);
+      const end = new Date(dateRange.end);
+      if (start > end) {
+        alert('❌ Start date cannot be after end date');
+        return;
+      }
+    }
+
+    console.log('✅ Applying filters:', { dateRange, filters });
+    fetchDashboardData(dateRange.start, dateRange.end, filters.userId, filters.videoId);
+  };
+
+  // ==================== HANDLE CLEAR FILTERS ====================
+  const handleClearFilters = () => {
+    const today = new Date().toISOString().split('T')[0];
+
+    // 1. Update states for UI (async)
+    setDateRange({ start: today, end: today });
+    setFilters({ userId: '', videoId: '' });
+    setAppliedDateRange({ start: today, end: today });
+    setAppliedFilters({ userId: '', videoId: '' });
+
+    // 2. Fetch data immediately with explicit "empty" values to avoid race condition
+    fetchDashboardData(today, today, '', '');
+  };
+
+  // ==================== HANDLE EXPORT ====================
+  const handleExport = () => {
+    const exportData = {
+      ...dashboardData,
+      exportedAt: new Date().toISOString(),
+      appliedFilters: appliedDateRange
+    };
+
+    const dataStr = JSON.stringify(exportData, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `qoe-report-${new Date().toISOString().split('T')[0]}.json`;
+    link.click();
+
+    console.log('✅ Report exported');
+  };
+
+  // ==================== GET DATE RANGE DISPLAY TEXT ====================
+  const getDateRangeText = () => {
+    if (appliedDateRange.start && appliedDateRange.end) {
+      return `${appliedDateRange.start} to ${appliedDateRange.end}`;
+    } else if (appliedDateRange.start) {
+      return `From ${appliedDateRange.start}`;
+    } else if (appliedDateRange.end) {
+      return `Until ${appliedDateRange.end}`;
+    }
+    return 'All Time';
+  };
+
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-900">
+        <div className="text-white text-lg">Loading Dashboard...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-900">
+        <div className="text-red-400 text-lg">{error}</div>
+      </div>
+    );
+  }
+
+  if (!dashboardData) return null;
+
+  // ==================== PREPARE CHART DATA ====================
+  const deviceData = Object.entries(dashboardData.deviceBreakdown || {}).map(([device, count]) => ({
+    name: device.charAt(0).toUpperCase() + device.slice(1),
+    value: count
+  }));
+
+  const networkData = Object.entries(dashboardData.networkTypeBreakdown || {}).map(([network, count]) => ({
+    name: network.toUpperCase(),
+    value: count
+  }));
+
+  const errorData = Object.entries(dashboardData.topErrorTypes || {}).map(([type, count]) => ({
+    name: type.replace(/_/g, ' ').charAt(0).toUpperCase() + type.replace(/_/g, ' ').slice(1),
+    value: count
+  }));
+
+  const errorMessageData = Object.entries(dashboardData.topErrorMessages || {}).map(([msg, count]) => ({
+    name: msg,
+    value: count
+  }));
+
+  const abandonedCount = dashboardData.statusBreakdown?.abandoned || 0;
+  const activeCount = dashboardData.liveSessions || 0;
+  const notCompletedCount = abandonedCount + activeCount;
+
+  const statusData = [
+    { name: 'Completed', value: dashboardData.statusBreakdown?.completed || 0, color: '#10b981', tooltip: 'completed watching' },
+    { name: 'Not Completed', value: notCompletedCount, color: '#f59e0b', tooltip: 'not completed watching' }
+  ];
+
+  const finishedSessions = (dashboardData.statusBreakdown?.completed || 0) + abandonedCount;
+  const completionRate = dashboardData.totalEvents > 0
+    ? ((dashboardData.statusBreakdown?.completed || 0) / dashboardData.totalEvents * 100).toFixed(1)
+    : 0;
+
+  const timelineData = [
+    { time: '00:00', events: Math.floor(dashboardData.totalEvents * 0.05) },
+    { time: '06:00', events: Math.floor(dashboardData.totalEvents * 0.12) },
+    { time: '12:00', events: Math.floor(dashboardData.totalEvents * 0.25) },
+    { time: '18:00', events: Math.floor(dashboardData.totalEvents * 0.35) },
+    { time: '23:59', events: Math.floor(dashboardData.totalEvents * 0.23) }
+  ];
+
+  const colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899'];
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 p-8">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-bold text-white mb-2 flex items-center gap-3">
+              <TrendingUp className="text-blue-400" />
+              QoE Dashboard
+            </h1>
+            <p className="text-slate-400 text-sm md:text-base">Video platform quality monitoring</p>
+            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+              <Calendar size={12} />
+              Period: {dashboardData.dateRange?.from || 'All Time'} - {dashboardData.dateRange?.to || 'Today'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => fetchDashboardData(dateRange.start, dateRange.end)}
+              className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-all text-sm"
+            >
+              <RefreshCw size={18} />
+              Refresh
+            </button>
+            <button
+              onClick={handleExport}
+              className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-all text-sm"
+            >
+              <Download size={18} />
+              Export
+            </button>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-slate-700/50 backdrop-blur-sm p-4 md:p-6 rounded-xl mb-8 border border-slate-600">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
+              <input
+                type="date"
+                value={dateRange.start}
+                onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
+              <input
+                type="date"
+                value={dateRange.end}
+                onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+              />
+            </div>
+
+            {/* NEW: Video Filter */}
+            <div className="space-y-1 text-white">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Filter by Video</label>
+              <select
+                value={filters.videoId}
+                onChange={(e) => setFilters({ ...filters, videoId: e.target.value })}
+                disabled={!!filters.userId}
+                className={`w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none transition-all ${filters.userId ? 'opacity-50 cursor-not-allowed grayscale' : 'cursor-pointer hover:border-slate-400'
+                  }`}
+              >
+                <option value="">All Videos</option>
+                {dashboardData.availableFilters?.videos.map(v => (
+                  <option key={v.id} value={v.id}>{v.label} ({v.id})</option>
+                ))}
+              </select>
+              {filters.userId && (
+                <p className="text-[9px] text-yellow-500/80 mt-1 italic">Clear user filter to enable video selection</p>
+              )}
+            </div>
+
+            {/* NEW: User Filter */}
+            <div className="space-y-1 text-white">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Filter by User</label>
+              <select
+                value={filters.userId}
+                onChange={(e) => setFilters({ ...filters, userId: e.target.value })}
+                disabled={!!filters.videoId}
+                className={`w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none transition-all ${filters.videoId ? 'opacity-50 cursor-not-allowed grayscale' : 'cursor-pointer hover:border-slate-400'
+                  }`}
+              >
+                <option value="">All Users</option>
+                {dashboardData.availableFilters?.users.map(u => (
+                  <option key={u.id} value={u.id}>{u.id}</option>
+                ))}
+              </select>
+              {filters.videoId && (
+                <p className="text-[9px] text-yellow-500/80 mt-1 italic">Clear video filter to enable user selection</p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3 mt-6 pt-6 border-t border-slate-600/50">
+            <button
+              onClick={handleApplyFilters}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition-all shadow-lg shadow-indigo-500/20"
+            >
+              Apply All Filters
+            </button>
+            <button
+              onClick={handleClearFilters}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-slate-600 hover:bg-slate-500 text-slate-200 px-6 py-2 rounded-lg font-bold transition-all"
+            >
+              Clear Filters
+            </button>
+
+            {/* Badge showing applied filters */}
+            {(appliedDateRange.start || appliedDateRange.end || appliedFilters.userId || appliedFilters.videoId) && (
+              <div className="flex-1 sm:flex-none flex items-center gap-2 px-4 py-2 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-400 text-xs font-medium">
+                <Zap size={14} />
+                Filters Active
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
+          <div className="bg-slate-700 p-6 rounded-lg border-l-4 border-blue-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Total Sessions</p>
+                <p className="text-3xl font-bold text-white">{dashboardData.totalEvents?.toLocaleString()}</p>
+              </div>
+              <Zap className="text-blue-400" size={40} />
+            </div>
+          </div>
+          {/* 
+          <div className="bg-slate-800 p-6 rounded-lg border-l-4 border-cyan-400">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Live Sessions</p>
+                <p className="text-3xl font-bold text-cyan-400 animate-pulse">{dashboardData.liveSessions || 0}</p>
+                <p className="text-[10px] text-cyan-500/80 mt-1 uppercase tracking-tighter font-bold">Currently Watching</p>
+              </div>
+              <RefreshCw className="text-cyan-400 animate-spin-slow" size={40} />
+            </div>
+          </div> */}
+
+          <div className="bg-slate-700 p-6 rounded-lg border-l-4 border-red-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Buffering Events</p>
+                <p className="text-3xl font-bold text-white">{dashboardData.totalBufferingEvents}</p>
+                <p className="text-xs text-slate-400 mt-1">{dashboardData.bufferingPercentage}%</p>
+              </div>
+              <AlertTriangle className="text-red-400" size={40} />
+            </div>
+          </div>
+
+          <div
+            onClick={() => scrollToSection(errorsSectionRef)}
+            className="bg-slate-700 p-6 rounded-lg border-l-4 border-orange-500 cursor-pointer hover:bg-slate-600 transition-all shadow-lg hover:shadow-orange-500/10"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Playback Errors</p>
+                <p className="text-3xl font-bold text-white">{dashboardData.totalErrors}</p>
+                <p className="text-xs text-slate-400 mt-1">Recorded: {dashboardData.recordedErrors}</p>
+              </div>
+              <AlertTriangle className="text-orange-400" size={40} />
+            </div>
+          </div>
+
+          <div
+            onClick={() => scrollToSection(usersSectionRef)}
+            className="bg-slate-700 p-6 rounded-lg border-l-4 border-green-500 cursor-pointer hover:bg-slate-600 transition-all shadow-lg hover:shadow-green-500/10"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Unique Users</p>
+                <p className="text-3xl font-bold text-white">{dashboardData.userCount}</p>
+                <p className="text-xs text-slate-400 mt-1">{dashboardData.videoCount} videos</p>
+              </div>
+              <Users className="text-green-400" size={40} />
+            </div>
+          </div>
+
+          <div
+            onClick={() => scrollToSection(completionSectionRef)}
+            className="bg-slate-700 p-6 rounded-lg border-l-4 border-indigo-500 cursor-pointer hover:bg-slate-600 transition-all shadow-lg hover:shadow-indigo-500/10"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Completion Rate</p>
+                <p className="text-3xl font-bold text-white">{completionRate}%</p>
+                <div className="flex flex-col mt-1">
+                  <p className="text-xs text-green-400 font-medium">{dashboardData.statusBreakdown?.completed} Finished</p>
+                  {/* <p className="text-[10px] text-slate-400">{notCompletedCount} Not Completed ({activeCount} Live + {abandonedCount} Abandoned)</p> */}
+                </div>
+              </div>
+              {/* <Download className="text-indigo-400" size={40} /> */}
+            </div>
+          </div>
+
+          <div className="bg-slate-700 p-6 rounded-lg border-l-4 border-purple-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-400 text-sm">Avg Watch Duration</p>
+                <p className="text-3xl font-bold text-white">{Math.floor(dashboardData.avgWatchDuration / 60)}:{(dashboardData.avgWatchDuration % 60).toFixed(0).padStart(2, '0')}</p>
+                <p className="text-xs text-slate-400 mt-1">{dashboardData.avgWatchDuration}s</p>
+              </div>
+              <TrendingUp className="text-purple-400" size={40} />
+            </div>
+          </div>
+        </div>
+
+        {/* Charts Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+          {/* Session Status Distribution */}
+          <div ref={completionSectionRef} className="bg-slate-700 p-6 rounded-lg scroll-mt-8">
+            <h2 className="text-xl font-bold text-white mb-4">Session Status Distribution</h2>
+            {statusData[0].value + statusData[1].value > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={statusData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                  >
+                    {statusData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value, name, props) => [`${value} ${props.payload.tooltip}`, name]}
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-slate-400">No session status data available</p>
+            )}
+          </div>
+
+          {/* Device Distribution */}
+          <div className="bg-slate-700 p-6 rounded-lg">
+            <h2 className="text-xl font-bold text-white mb-4">Device Distribution</h2>
+            {deviceData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie data={deviceData} cx="50%" cy="50%" outerRadius={80} fill="#8884d8" dataKey="value">
+                    {deviceData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value, name) => [`${value} sessions used this device`, name]}
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-slate-400">No data available for this period</p>
+            )}
+          </div>
+
+          {/* Network Type Distribution */}
+          <div className="bg-slate-700 p-6 rounded-lg">
+            <h2 className="text-xl font-bold text-white mb-4">Network Type Distribution</h2>
+            {networkData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={networkData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
+                  <XAxis dataKey="name" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip
+                    formatter={(value, name, props) => [`${value} sessions used this network`, props.payload.name]}
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Bar dataKey="value" fill="#3b82f6" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-slate-400">No data available for this period</p>
+            )}
+          </div>
+
+          {/* Error Types */}
+          {errorData.length > 0 && (
+            <div className="bg-slate-700 p-6 rounded-lg">
+              <h2 className="text-xl font-bold text-white mb-4">Error Types Distribution</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={errorData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
+                  <XAxis dataKey="name" stroke="#94a3b8" angle={-45} textAnchor="end" height={80} />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip
+                    formatter={(value, name, props) => [`${value} sessions affected by this type`, props.payload.name]}
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Bar dataKey="value" fill="#ef4444" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Common Error Messages */}
+          {errorMessageData.length > 0 && (
+            <div ref={errorsSectionRef} className="bg-slate-700 p-6 rounded-lg scroll-mt-8">
+              <h2 className="text-xl font-bold text-white mb-4">Common Error Messages</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={errorMessageData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
+                  <XAxis dataKey="name" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip
+                    formatter={(value) => [`${value} sessions hit this error message`]}
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Bar dataKey="value" fill="#f59e0b" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Quality Changes */}
+          <div className="bg-slate-700 p-6 rounded-lg lg:col-span-2">
+            <h2 className="text-xl font-bold text-white mb-4">Quality Changes</h2>
+            <div className="space-y-2">
+              <div className="flex justify-between text-white">
+                <span>Total Quality Changes:</span>
+                <span className="font-bold">{dashboardData.totalQualityChanges}</span>
+              </div>
+              <div className="bg-slate-600 p-3 rounded mt-4">
+                <p className="text-slate-300 text-sm">
+                  Quality adaptations help users with varying network conditions watch videos seamlessly.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Detailed Lists Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+          {/* User Directory */}
+          <div ref={usersSectionRef} className="bg-slate-700 p-6 rounded-lg shadow-xl scroll-mt-8">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <Users className="text-blue-400" size={24} />
+                User Directory
+              </h2>
+              <span className="text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded">
+                {dashboardData.userList?.length || 0} Total Users
+              </span>
+            </div>
+            <div className="overflow-x-auto max-h-[400px] overflow-y-auto custom-scrollbar">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-600 text-slate-400 text-xs uppercase tracking-wider">
+                    <th className="py-3 px-4 font-semibold">Device ID</th>
+                    <th className="py-3 px-4 font-semibold text-center">Sessions</th>
+                    <th className="py-3 px-4 font-semibold text-center">Avg QoE</th>
+                    {/* <th className="py-3 px-4 font-semibold">Platform & IP</th> */}
+                  </tr>
+                </thead>
+                <tbody className="text-slate-300 text-sm">
+                  {(dashboardData.userList || []).map((user, idx) => (
+                    <tr key={idx} className="border-b border-slate-600/50 hover:bg-slate-600/30 transition-colors">
+                      <td className="py-4 px-4 font-medium text-blue-300 truncate max-w-[150px]" title={user.userId}>
+                        {user.userId}
+                      </td>
+                      <td className="py-4 px-4 text-center">{user.sessionCount}</td>
+                      <td className="py-4 px-4 text-center">
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${user.avgQoEScore > 80 ? 'bg-green-500/20 text-green-400' :
+                          user.avgQoEScore > 60 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-red-500/20 text-red-400'
+                          }`}>
+                          {user.avgQoEScore}
+                        </span>
+                      </td>
+                      <td className="py-4 px-4">
+                        {/* <div className="flex flex-col gap-2">
+                          <div className="flex flex-wrap gap-1">
+                            {user.platforms.map((p, i) => (
+                              <span key={i} className="text-[10px] bg-slate-800 text-blue-400 px-1.5 py-0.5 rounded border border-blue-900/50">
+                                {p}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {(user.ipAddresses || []).map((ip, i) => (
+                              <span key={i} className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-600 font-mono">
+                                {ip}
+                              </span>
+                            ))}
+                          </div>
+                        </div> */}
+                      </td>
+                    </tr>
+                  ))}
+                  {(!dashboardData.userList || dashboardData.userList.length === 0) && (
+                    <tr><td colSpan="4" className="py-8 text-center text-slate-500 italic">No user data found</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Video Performance */}
+          <div className="bg-slate-700 p-6 rounded-lg shadow-xl">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <Zap className="text-yellow-400" size={24} />
+                Video Performance
+              </h2>
+              <span className="text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded">
+                {dashboardData.videoList?.length || 0} Videos
+              </span>
+            </div>
+            <div className="overflow-x-auto max-h-[400px] overflow-y-auto custom-scrollbar">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-600 text-slate-400 text-xs uppercase tracking-wider">
+                    <th className="py-3 px-4 font-semibold">Video Title</th>
+                    <th className="py-3 px-4 font-semibold text-center">Plays</th>
+                    <th className="py-3 px-4 font-semibold text-center">Avg QoE</th>
+                    <th className="py-3 px-4 font-semibold text-center">Err Rate</th>
+                  </tr>
+                </thead>
+                <tbody className="text-slate-300 text-sm">
+                  {(dashboardData.videoList || []).map((video, idx) => (
+                    <tr key={idx} className="border-b border-slate-600/50 hover:bg-slate-600/30 transition-colors">
+                      <td className="py-4 px-4 font-medium text-slate-200">
+                        <div className="flex flex-col">
+                          <span>{video.title}</span>
+                          <span className="text-[10px] text-slate-500 font-mono tracking-tighter truncate max-w-[120px]" title={video.videoId}>
+                            ID: {video.videoId}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 text-center">{video.playCount}</td>
+                      <td className="py-4 px-4 text-center">
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${video.avgQoEScore > 80 ? 'bg-green-500/20 text-green-400' :
+                          video.avgQoEScore > 60 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-red-500/20 text-red-400'
+                          }`}>
+                          {video.avgQoEScore}
+                        </span>
+                      </td>
+                      <td className="py-4 px-4 text-center">
+                        <span className={video.errorRate > 0.5 ? 'text-red-400 font-bold' : 'text-slate-400'}>
+                          {(video.errorRate * 100).toFixed(1)}%
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {(!dashboardData.videoList || dashboardData.videoList.length === 0) && (
+                    <tr><td colSpan="4" className="py-8 text-center text-slate-500 italic">No video data found</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {/* Insights */}
+        <div className="bg-slate-700 p-6 rounded-lg">
+          <h2 className="text-xl font-bold text-white mb-4">Performance Insights</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-slate-600 p-4 rounded">
+              <p className="text-blue-300 font-semibold mb-2">✓ Buffering Analysis</p>
+              <p className="text-slate-300 text-sm">
+                {dashboardData.bufferingPercentage}% of events are buffering. {dashboardData.bufferingPercentage > 5 ? '⚠️ Consider optimizing CDN' : '✅ Good performance'}
+              </p>
+            </div>
+            <div className="bg-slate-600 p-4 rounded">
+              <p className="text-orange-300 font-semibold mb-2">⚠ Error Rate</p>
+              <p className="text-slate-300 text-sm">
+                {dashboardData.errorPercentage}% of sessions were affected by errors ({dashboardData.recordedErrors} recorded errors and {dashboardData.recordedCrashes} crashes).
+              </p>
+            </div>
+            <div className="bg-slate-600 p-4 rounded">
+              <p className="text-green-300 font-semibold mb-2">✓ User Engagement</p>
+              <p className="text-slate-300 text-sm">
+                {dashboardData.userCount} unique users across {dashboardData.videoCount} videos.
+                <br />
+                <span className="text-xs mt-1 block">
+                  <span className="text-green-400 font-bold">{dashboardData.statusBreakdown?.completed} completed watching</span> •
+                  <span className="text-orange-400"> {notCompletedCount} not completed</span> ({activeCount} active, {abandonedCount} abandoned)
+                </span>
+              </p>
+            </div>
+            <div className="bg-slate-600 p-4 rounded">
+              <p className="text-indigo-300 font-semibold mb-2">ℹ Recommendation</p>
+              <p className="text-slate-300 text-sm">
+                Focus on reducing {dashboardData.recordedErrors > 0 ? 'recorded errors' : 'buffering events'} for the {finishedSessions} finished sessions to improve overall QoE score. {dashboardData.liveSessions > 0 ? `${dashboardData.liveSessions} users are currently watching.` : ''}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default QoEDashboard;
