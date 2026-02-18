@@ -43,6 +43,13 @@ const qoeSessionSchema = new mongoose.Schema({
     default: {}
   },
 
+  // Player Info
+  playerType: {
+    type: String,
+    enum: ['youtube', 'jwplayer', 'unknown'],
+    default: 'youtube'
+  },
+
   // ==================== TIMING ====================
   startTime: {
     type: Date,
@@ -95,7 +102,12 @@ const qoeSessionSchema = new mongoose.Schema({
   },
   finalQuality: String,
 
-  // ==================== PLAYBACK ERRORS ====================
+  // ==================== DEEP QOE METRICS ====================
+  startupTime: { type: Number, default: 0 }, // Time to first frame in ms
+  avgBitrate: { type: Number, default: 0 },  // Average bitrate in bps
+  maxBitrate: { type: Number, default: 0 },  // Max bitrate encountered in bps
+
+  // ==================== ERROR METRICS ====================
   playbackErrors: [{
     code: String,
     message: String,
@@ -116,7 +128,6 @@ const qoeSessionSchema = new mongoose.Schema({
   recordedErrors: [{
     type: {
       type: String,
-      enum: ['network_error', 'loading_error', 'initialization_error', 'playback_error'],
       required: true
     },
     message: String,

@@ -13,6 +13,12 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+// ============= PLAYER TYPE CONSTANTS =============
+const PLAYER_TYPE = {
+  YOUTUBE: 'youtube',
+  JWPLAYER: 'jwplayer'
+};
+
 // ============= UTILITY FUNCTIONS =============
 const extractVideoId = (url) => {
   try {
@@ -35,15 +41,24 @@ const extractVideoId = (url) => {
 };
 
 const QoETrackerDemo = () => {
-  const ytPlayerContainerRef = useRef(null);
+  const playerRef = useRef(null);
   const defaultUrl = "https://www.youtube.com/watch?v=Czf8xfNGAXA";
-  const [videoUrl, setVideoUrl] = useState(() => {
-    return localStorage.getItem('qoe_last_video_url') || defaultUrl;
+  const [videoUrl, setVideoUrl] = useState(localStorage.getItem('qoe_last_video_url') || defaultUrl);
+  const [playerType, setPlayerType] = useState(() => {
+  const saved = localStorage.getItem('qoe_last_video_url');
+  if (!saved) return PLAYER_TYPE.YOUTUBE;
+  return (saved.includes('.mp4') || saved.includes('.m3u8') || saved.includes('jwplayer')) 
+    ? PLAYER_TYPE.JWPLAYER 
+    : PLAYER_TYPE.YOUTUBE;
   });
-  const [videoId, setVideoId] = useState(() => {
-    const savedUrl = localStorage.getItem('qoe_last_video_url') || defaultUrl;
-    return extractVideoId(savedUrl) || "Czf8xfNGAXA";
-  });
+
+ const [videoId, setVideoId] = useState(() => {
+  const saved = localStorage.getItem('qoe_last_video_url');
+  if (!saved) return ""; // Or your default YouTube ID
+  const isJW = saved.includes('.mp4') || saved.includes('.m3u8') || saved.includes('jwplayer');
+  return isJW ? saved : extractVideoId(saved);
+ });
+  const playerTypeRef = useRef(PLAYER_TYPE.YOUTUBE);
   const [sessionId, setSessionId] = useState(null);
   const [events, setEvents] = useState([]);
   const [stats, setStats] = useState({
@@ -55,6 +70,10 @@ const QoETrackerDemo = () => {
     videoTime: 0,
     qoe: 100,
   });
+  // New Refs for Deep Metrics
+  const startupTimeRef = useRef(0);
+  const bitrateSamplesRef = useRef([]);
+  const playRequestTimeRef = useRef(0);
   const [syncStatus, setSyncStatus] = useState("idle");
   const [dbEvents, setDbEvents] = useState(0);
   const [networkErrors, setNetworkErrors] = useState([]);
@@ -206,6 +225,9 @@ const QoETrackerDemo = () => {
             successCount++;
             setDbEvents((prev) => prev + 1);
           } else {
+            const errorText = await response.text();
+            console.error(`❌ Sync failed for event ${event.eventType}: ${response.status} - ${errorText}`);
+            console.error('Payload:', event);
             failedEvents.push(event);
           }
         } catch (err) {
@@ -249,11 +271,10 @@ const QoETrackerDemo = () => {
       }
     }
 
-    // 2. If still no session and not starting, try starting one
     if (!sessionIdRef.current && !isStartingSessionRef.current) {
       console.log(`🎯 No session for ${eventType} → triggering start`);
-      startSession();
-      for (let i = 0; i < 10; i++) {
+      await startSession(); // Use await if startSession returns a promise
+      for (let i = 0; i < 15; i++) {
         await new Promise(r => setTimeout(r, 500));
         if (sessionIdRef.current) break;
       }
@@ -290,9 +311,13 @@ const QoETrackerDemo = () => {
         );
 
         if (response.ok) {
+          const result = await response.json();
           setDbEvents((prev) => prev + 1);
-          console.log(`✅ Event sent: ${eventType}`);
+          console.log(`✅ Event sent to DB: ${eventType}`);
+          console.log(`📌 Persisted to session: ${sessionIdRef.current}`);
           return; // Success
+        } else {
+          console.warn(`⚠️ Server returned ${response.status} for ${eventType}`);
         }
       } catch (fetchError) {
         console.warn(
@@ -308,7 +333,6 @@ const QoETrackerDemo = () => {
       console.error(`❌ Failed to record ${eventType}:`, error);
     }
   };
-
   // ============= SESSION MANAGEMENT =============
   const startSession = async () => {
     if (sessionIdRef.current || isStartingSessionRef.current) {
@@ -328,7 +352,7 @@ const QoETrackerDemo = () => {
         sessionId: newSessionId,
         userId: selectedUserId,
         videoId: videoIdRef.current,
-        videoTitle: "YouTube Video",
+        videoTitle: `${playerTypeRef.current} Video`,
         deviceInfo: {
           type: navigator.userAgent.includes("Mobile") ? "mobile" : "desktop",
           os: getOS(),
@@ -336,6 +360,7 @@ const QoETrackerDemo = () => {
         },
         networkType: getNetworkType(),
         cdnEndpoint: await getCDNEndpoint(),
+        playerType: playerTypeRef.current
       };
 
       console.log("🎬 Starting Session:", {
@@ -400,13 +425,22 @@ const QoETrackerDemo = () => {
     try {
       setSyncStatus("syncing");
 
-      const currentTime = window.player?.getCurrentTime() || 0;
-      const videoDuration = window.player?.getDuration() || 1;
+      let currentTime = 0;
+      let videoDuration = 1;
+      let completedPercentage = 0;
+
+      if (playerTypeRef.current === PLAYER_TYPE.JWPLAYER && window.jwInstance) {
+        currentTime = window.jwInstance.getPosition() || 0;
+        videoDuration = window.jwInstance.getDuration() || 1;
+        // For JWPlayer, when ending session (usually from 'complete' event), consider it 100% completed
+        completedPercentage = 100;
+      } else {
+        currentTime = window.player?.getCurrentTime() || 0;
+        videoDuration = window.player?.getDuration() || 1;
+        completedPercentage = Math.round((currentTime / videoDuration) * 100);
+      }
       const totalSessionDuration = Math.round(
         (Date.now() - sessionStartTimeRef.current) / 1000
-      );
-      const completedPercentage = Math.round(
-        (currentTime / videoDuration) * 100
       );
 
       const payload = {
@@ -417,6 +451,14 @@ const QoETrackerDemo = () => {
         qualityChanges: qualityChangesRef.current,
         playbackErrors: errorsRef.current,
         finalQuality: stats.currentQuality,
+        // Deep Metrics
+        startupTime: startupTimeRef.current,
+        avgBitrate: bitrateSamplesRef.current.length > 0
+          ? Math.round(bitrateSamplesRef.current.reduce((a, b) => a + b, 0) / bitrateSamplesRef.current.length)
+          : 0,
+        maxBitrate: bitrateSamplesRef.current.length > 0
+          ? Math.max(...bitrateSamplesRef.current)
+          : 0
       };
 
       console.log("🏁 Ending Session:", {
@@ -560,183 +602,390 @@ const QoETrackerDemo = () => {
     const cdnInfo = await captureYouTubeCDN(videoIdRef.current);
     return cdnInfo;
   };
+const handleLoadVideo = () => {
+  // 1. CLEAR ALL STATE IMMEDIATELY
+  console.log("🧹 Starting deep cleanup...");
+  if (timerRef.current) {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+  }
 
-  const handleLoadVideo = () => {
-    const extractedId = extractVideoId(videoUrl);
-    if (extractedId) {
-      // NEW: Persist the video URL
-      localStorage.setItem('qoe_last_video_url', videoUrl);
+  // 2. DESTROY JWPLAYER (Global and Instance)
+  if (window.jwInstance) {
+    console.log("🗑️ Destroying JWPlayer instance");
+    try { window.jwInstance.remove(); } catch (e) { console.warn(e); }
+    window.jwInstance = null;
+  }
 
-      videoIdRef.current = extractedId;
-      setVideoId(extractedId);
-      setSessionId(null);
-      setEvents([]);
-      setStats({
-        bufferingCount: 0,
-        errorCount: 0,
-        qualityChanges: [],
-        currentQuality: "unknown",
-        totalWatchTime: 0,
-        videoTime: 0,
-        qoe: 100,
-      });
-      eventCountRef.current = {};
-      setDbEvents(0);
-      setOfflineQueuedEvents(0);
-      sessionIdRef.current = null;
-      sessionStartTimeRef.current = null;
-      setSessionId(null);
-      isStartingSessionRef.current = false;
-      totalWatchTimeRef.current = 0;
+  // 3. DESTROY YOUTUBE
+  if (window.player && typeof window.player.destroy === 'function') {
+    console.log("🗑️ Destroying YouTube player");
+    try { window.player.destroy(); } catch (e) { console.warn(e); }
+    window.player = null;
+  }
 
-      console.log("🎬 Loading Video:", { videoId: extractedId, url: videoUrl });
+  // 4. CRITICAL: DOM WIPE
+  if (playerRef.current) {
+    playerRef.current.innerHTML = '';
+    const newTarget = document.createElement('div');
+    newTarget.id = "player-target";
+    playerRef.current.appendChild(newTarget);
+  }
 
-      if (window.YT && window.YT.Player) {
-        initPlayer(extractedId);
-      } else {
-        const checkAPI = () => {
-          if (window.YT && window.YT.Player) {
-            initPlayer(extractedId);
-          } else {
-            setTimeout(checkAPI, 100);
-          }
-        };
-        checkAPI();
-      }
+  // 5. IDENTIFY TYPE & PERSIST TO STORAGE
+  const isJW = videoUrl.includes('.mp4') || videoUrl.includes('.m3u8') || videoUrl.includes('jwplayer');
+  const type = isJW ? PLAYER_TYPE.JWPLAYER : PLAYER_TYPE.YOUTUBE;
+  const id = isJW ? videoUrl : extractVideoId(videoUrl);
+
+  if (!id) {
+    alert("❌ Invalid URL or ID");
+    return;
+  }
+
+  // ✅ SAVE TO LOCALSTORAGE: Remembers the video for the next visit
+  localStorage.setItem('qoe_last_video_url', videoUrl);
+
+  // Update State & Refs
+  setPlayerType(type);
+  playerTypeRef.current = type;
+  setVideoId(id);
+  videoIdRef.current = id;
+
+  // Reset Stats
+  setStats({
+    bufferingCount: 0,
+    errorCount: 0,
+    qualityChanges: [],
+    currentQuality: "unknown",
+    totalWatchTime: 0,
+    videoTime: 0,
+    qoe: 100,
+  });
+
+  // 6. DELAYED INITIALIZATION
+  setTimeout(() => {
+    console.log(`🚀 Initializing ${type} for ID: ${id}`);
+    if (type === PLAYER_TYPE.JWPLAYER) {
+      initJWPlayer(id);
     } else {
-      alert("❌ Invalid YouTube URL or Video ID. Please check and try again.");
+      if (window.YT && window.YT.Player) {
+        initPlayer(id);
+      } else {
+        const checkYT = setInterval(() => {
+          if (window.YT && window.YT.Player) {
+            initPlayer(id);
+            clearInterval(checkYT);
+          }
+        }, 100);
+      }
+    }
+  }, 400);
+};
+
+  // Track script loading status to prevent retries on failure
+  const scriptStatusRef = useRef('idle'); // idle, loading, loaded, error
+
+  // ============= YOUTUBE & JWPLAYER SETUP =============
+useEffect(() => {
+  // Sync refs immediately
+  playerTypeRef.current = playerType;
+  videoIdRef.current = videoId;
+
+  // 1. YouTube Script Loading
+  if (!window.YT) {
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+  }
+
+  // 2. JWPlayer Script Loading
+  if (!window.jwplayer && !document.getElementById('jwplayer-script')) {
+    const script = document.createElement("script");
+    script.id = 'jwplayer-script';
+    script.src = "https://cdn.jwplayer.com/libraries/KB5zFt7A.js";
+    script.onload = () => {
+      if (playerTypeRef.current === PLAYER_TYPE.JWPLAYER && videoIdRef.current) {
+        initJWPlayer(videoIdRef.current);
+      }
+    };
+    document.head.appendChild(script);
+  } else if (window.jwplayer && playerType === PLAYER_TYPE.JWPLAYER) {
+    // If reloaded and library is already there, init immediately
+    initJWPlayer(videoId);
+  }
+
+  // 3. YouTube Ready Callback
+  window.onYouTubeIframeAPIReady = () => {
+    if (playerTypeRef.current === PLAYER_TYPE.YOUTUBE && videoIdRef.current) {
+      initPlayer(videoIdRef.current);
     }
   };
 
-  // ============= YOUTUBE PLAYER SETUP =============
-  useEffect(() => {
-    if (window.YT) {
-      initPlayer(videoId);
-    } else {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      document.head.appendChild(tag);
-      window.onYouTubeIframeAPIReady = () => initPlayer(videoId);
+  // 4. Event Listeners
+  window.addEventListener("error", handleError);
+  window.addEventListener("online", handleOnline);
+  window.addEventListener("offline", handleOffline);
+
+  return () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    window.removeEventListener("error", handleError);
+    window.removeEventListener("online", handleOnline);
+    window.removeEventListener("offline", handleOffline);
+    
+    if (window.jwInstance) window.jwInstance.remove();
+    if (window.player && window.player.destroy) window.player.destroy();
+  };
+}, [videoId, playerType]);// ✅ Added playerType to dependencies
+  // Global crash tracking
+  const handleError = (message, source, lineno, colno, error) => {
+    console.error("🚨 App Crash Detected:", {
+      message: String(message || 'Unknown error'),
+      source,
+      lineno,
+      colno,
+    });
+
+    const videoTime = (window.player && typeof window.player.getCurrentTime === 'function')
+      ? Math.floor(window.player.getCurrentTime() || 0)
+      : 0;
+
+    let errorType = "javascript_error";
+    const messageStr = String(message || '');
+
+    if (messageStr.toLowerCase().includes("invalid video id")) {
+      errorType = "invalid_video_id";
+    } else if (messageStr.includes("ERR_INTERNET_DISCONNECTED")) {
+      errorType = "network_error";
+    } else if (messageStr.includes("cross-origin")) {
+      errorType = "cross_origin_error";
     }
 
-    // Global crash tracking
-    const handleError = (message, source, lineno, colno, error) => {
-      console.error("🚨 App Crash Detected:", {
-        message,
-        source,
-        lineno,
-        colno,
-        error,
-      });
+    errorsRef.current.push({
+      code: errorType,
+      message: messageStr,
+      timestamp: new Date().toISOString(),
+      atVideoTime: videoTime,
+      severity: "critical",
+      source,
+      lineno,
+      colno,
+    });
 
-      let errorType = "javascript_error";
-      if (message && String(message).toLowerCase().includes("invalid video id")) {
-        errorType = "invalid_video_id";
-      } else if (message && String(message).includes("ERR_INTERNET_DISCONNECTED")) {
-        errorType = "network_error";
-      } else if (message && String(message).includes("cross-origin")) {
-        errorType = "cross_origin_error";
-      }
+    recordCriticalEvent("crash", {
+      type: errorType,
+      message: messageStr,
+      source,
+      lineno,
+      colno,
+      stack: error?.stack,
+      userAgent: navigator.userAgent,
+      severity: "critical",
+    });
 
-      const videoTime = Math.floor(window.player?.getCurrentTime() || 0);
+    setStats((prev) => ({
+      ...prev,
+      errorCount: prev.errorCount + 1,
+    }));
 
-      errorsRef.current.push({
-        code: errorType,
-        message: String(message),
-        timestamp: new Date().toISOString(),
-        atVideoTime: videoTime,
-        severity: "critical",
-        source,
-        lineno,
-        colno,
-      });
+    addUIEvent({
+      type: "crash",
+      label: `🚨 CRASH: ${errorType}`,
+      color: "#991b1b",
+    });
 
-      recordCriticalEvent("crash", {
-        type: errorType,
-        message: String(message),
-        source,
-        lineno,
-        colno,
-        stack: error?.stack,
-        userAgent: navigator.userAgent,
-        severity: "critical",
-      });
+    return true;
+  };
 
-      setStats((prev) => ({
-        ...prev,
-        errorCount: prev.errorCount + 1,
-      }));
 
-      addUIEvent({
-        type: "crash",
-        label: `🚨 CRASH: ${errorType}`,
-        color: "#991b1b",
-      });
-    };
+  // Network status tracking
+  const handleOnline = () => {
+    console.log("🌐 Network restored");
+    console.log("🌐 Network restored");
 
-    // Network status tracking
-    const handleOnline = () => {
-      console.log("🌐 Network restored");
+    if (sessionIdRef.current) {
+      // ✅ CHANGED: Use 'network_recovery' which is now whitelisted
       recordCriticalEvent("network_recovery", {
+        type: "recovery",
+        message: "Network restored",
         previousErrors: networkErrors.length,
         timestamp: new Date().toISOString(),
       });
+      syncOfflineEvents(sessionIdRef.current);
+    }
 
-      if (sessionIdRef.current) {
-        syncOfflineEvents(sessionIdRef.current);
+    setNetworkErrors([]);
+
+    addUIEvent({
+      type: "networkRecovery",
+      label: "🌐 NETWORK RESTORED",
+      color: "#10b981",
+    });
+
+    if (resumePositionRef.current !== null) {
+      addUIEvent({
+        type: "resumePending",
+        label: "🔄 READY TO RESUME PLAYBACK",
+        color: "#3b82f6",
+      });
+    }
+  };
+
+  const handleOffline = () => {
+    console.warn("🌐 Network offline detected");
+
+    const currentTime = (window.player && typeof window.player.getCurrentTime === 'function')
+      ? Math.floor(window.player.getCurrentTime() || 0)
+      : 0;
+
+    if (currentTime > 0) {
+      resumePositionRef.current = currentTime;
+      console.log(`💾 Saved resume position: ${currentTime}s`);
+    }
+
+    errorsRef.current.push({
+      code: "NETWORK_OFFLINE",
+      message: "Network connection lost during playback",
+      timestamp: new Date().toISOString(),
+      atVideoTime: currentTime,
+      severity: "critical",
+    });
+
+    // ✅ Record network error immediately to backend
+    recordCriticalEvent("network_error", {
+      type: "offline",
+      message: "Network connection lost during playback",
+      videoTime: currentTime,
+      severity: "critical",
+      timestamp: new Date().toISOString(),
+    });
+
+    setNetworkErrors((prev) => [
+      ...prev,
+      {
+        type: "offline",
+        timestamp: new Date().toISOString(),
+        videoTime: currentTime,
+      },
+    ]);
+
+    setStats((prev) => ({
+      ...prev,
+      errorCount: prev.errorCount + 1,
+    }));
+
+    addUIEvent({
+      type: "networkError",
+      label: "🌐 NETWORK OFFLINE",
+      color: "#dc2626",
+    });
+  };
+
+
+
+  const initJWPlayer = (url, retryCount = 0) => {
+    if (!window.jwplayer) {
+      if (scriptStatusRef.current === 'error') {
+        console.error("❌ Aborting JWPlayer init: Library failed to load");
+        return;
       }
 
-      setNetworkErrors([]);
-
-      addUIEvent({
-        type: "networkRecovery",
-        label: "🌐 NETWORK RESTORED",
-        color: "#10b981",
-      });
-
-      // Show recovery message if we have a saved position
-      if (resumePositionRef.current !== null) {
+      if (retryCount < 20) {
+        console.warn(`⏳ JWPlayer library not ready, retrying... (${retryCount + 1}/20)`);
+        setTimeout(() => initJWPlayer(url, retryCount + 1), 500);
+      } else {
+        console.error("❌ JWPlayer library failed to load after retries");
         addUIEvent({
-          type: "resumePending",
-          label: "🔄 READY TO RESUME PLAYBACK",
-          color: "#3b82f6",
+          type: "error",
+          label: "❌ PLAYER LOAD FAILED",
+          color: "#dc2626",
         });
       }
-    };
+      return;
+    }
 
-    const handleOffline = () => {
-      console.warn("🌐 Network offline detected");
-      const currentTime = Math.floor(window.player?.getCurrentTime() || 0);
+    // Destroy previous instances
+    if (window.player && typeof window.player.destroy === 'function') {
+      window.player.destroy();
+      window.player = null;
+    }
+    try { window.jwplayer(playerRef.current).remove(); } catch (e) { }
+    // Clear the player container
+    if (playerRef.current) {
+      playerRef.current.innerHTML = '';
+    }
 
-      // Save position for resume
-      if (currentTime > 0) {
-        resumePositionRef.current = currentTime;
-        console.log(`💾 Saved resume position: ${currentTime}s`);
+    console.log("🚀 Initializing JWPlayer with URL:", url);
+    console.log(`🔍 Current playerType: ${playerTypeRef.current}`);
+
+    const jw = window.jwplayer(playerRef.current).setup({
+      file: url,
+      width: "100%",
+      height: 500,
+      autostart: false,
+      controls: true
+    });
+
+    window.jwInstance = jw;
+
+    // ==================== EVENT LISTENERS ====================
+
+    jw.on('ready', () => {
+      console.log("🎮 JWPlayer Ready");
+      console.log(`✅ Confirmed playerType: ${playerTypeRef.current}`);
+      handlePlayerReady();
+
+      // Get initial quality
+      const levels = jw.getQualityLevels();
+      const currentLevel = jw.getCurrentQuality();
+      if (levels && levels[currentLevel]) {
+        const initialQuality = levels[currentLevel].label || 'auto';
+        lastQualityRef.current = initialQuality;
+        setStats(prev => ({
+          ...prev,
+          currentQuality: initialQuality
+        }));
+        console.log(`📺 Initial quality set: ${initialQuality}`);
       }
+    });
+
+    jw.on('play', () => {
+      console.log("▶️ JWPlayer PLAY event");
+      handleStateChange({ data: 1 });
+    });
+
+    jw.on('pause', () => {
+      console.log("⏸️ JWPlayer PAUSE event");
+      handleStateChange({ data: 2 });
+    });
+
+    jw.on('buffer', () => {
+      console.log("⏳ JWPlayer BUFFER event");
+      handleStateChange({ data: 3 });
+    });
+
+    jw.on('complete', () => {
+      console.log("✅ JWPlayer COMPLETE event");
+      handleStateChange({ data: 0 });
+    });
+
+    jw.on('error', (e) => {
+      console.error("❌ JWPlayer Error:", e);
+      const videoTime = Math.floor(jw.getPosition() || 0);
 
       errorsRef.current.push({
-        code: "NETWORK_OFFLINE",
-        message: "Network connection lost during playback",
+        code: String(e.code || 'JW_ERR'),
+        message: e.message || "Unknown JWPlayer Error",
         timestamp: new Date().toISOString(),
-        atVideoTime: currentTime,
-        severity: "critical",
+        atVideoTime: videoTime,
+        severity: "critical"
       });
 
-      recordCriticalEvent("network_error", {
-        type: "offline",
-        videoTime: currentTime,
-        severity: "critical",
-        timestamp: new Date().toISOString(),
+      recordCriticalEvent("playback_error", {
+        errorCode: String(e.code || 'JW_ERR'),
+        errorMessage: e.message || "JWPlayer Error",
+        videoTime: videoTime,
+        severity: "critical"
       });
-
-      setNetworkErrors((prev) => [
-        ...prev,
-        {
-          type: "offline",
-          timestamp: new Date().toISOString(),
-          videoTime: currentTime,
-        },
-      ]);
 
       setStats((prev) => ({
         ...prev,
@@ -744,32 +993,136 @@ const QoETrackerDemo = () => {
       }));
 
       addUIEvent({
-        type: "networkError",
-        label: "🌐 NETWORK OFFLINE",
-        color: "#dc2626",
+        type: "error",
+        label: `❌ JW Error: ${e.message}`,
+        color: "#ef4444",
       });
-    };
 
-    window.addEventListener("error", handleError);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
+      updateQoEScore();
+    });
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      window.removeEventListener("error", handleError);
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, [networkErrors]);
+    // ✅ FIX 2: PROPERLY TRACK QUALITY CHANGES FOR JWPLAYER
+    jw.on('levels', () => {
+      console.log("📺 JWPlayer levels available");
+      const levels = jw.getQualityLevels();
+      console.log("Available quality levels:", levels);
+    });
+
+    jw.on('levelsChanged', (e) => {
+      console.log("📺 JWPlayer levelsChanged event:", e);
+      handleJWQualityChange(jw);
+    });
+
+    jw.on('visualQuality', (e) => {
+      console.log("📺 JWPlayer visualQuality event:", e);
+      if (e.mode === 'auto') {
+        // Only track actual quality switches, not initial selection
+        if (lastQualityRef.current && e.level.label !== lastQualityRef.current) {
+          handleJWQualityChange(jw);
+        }
+      } else {
+        // Manual quality change
+        handleJWQualityChange(jw);
+      }
+    });
+
+    // Startup time tracking
+    playRequestTimeRef.current = Date.now();
+    jw.on('firstFrame', () => {
+      const startup = Date.now() - playRequestTimeRef.current;
+      console.log(`🚀 JWPlayer Startup Time: ${startup}ms`);
+      startupTimeRef.current = startup;
+
+      addUIEvent({
+        type: "startup",
+        label: `🚀 Started in ${startup}ms`,
+        color: "#8b5cf6",
+      });
+    });
+
+    // Bitrate tracking
+    jw.on('levels', () => {
+      const levels = jw.getQualityLevels();
+      const currentLevel = jw.getCurrentQuality();
+      if (levels && levels[currentLevel] && levels[currentLevel].bitrate) {
+        const bitrate = levels[currentLevel].bitrate;
+        bitrateSamplesRef.current.push(bitrate);
+        console.log(`📶 JWPlayer Bitrate: ${Math.round(bitrate / 1000)} kbps`);
+      }
+    });
+  };
+  const handleJWQualityChange = (jwInstance) => {
+    const levels = jwInstance.getQualityLevels();
+    const currentLevel = jwInstance.getCurrentQuality();
+
+    if (!levels || !levels[currentLevel]) {
+      console.warn("⚠️ Could not get current quality level");
+      return;
+    }
+
+    const newQuality = levels[currentLevel].label || 'auto';
+    const previousQuality = lastQualityRef.current || 'initial';
+
+    // Don't record if it's the same quality
+    if (newQuality === previousQuality) {
+      console.log(`📺 Quality unchanged: ${newQuality}`);
+      return;
+    }
+
+    console.log(`📺 Quality changed: ${previousQuality} → ${newQuality}`);
+
+    // Start session if not started
+    if (!sessionIdRef.current && !isStartingSessionRef.current) {
+      console.log("🎯 Quality change before session start → starting session");
+      startSession();
+    }
+
+    const videoTime = Math.floor(jwInstance.getPosition() || 0);
+
+    qualityChangesRef.current.push({
+      timestamp: new Date().toISOString(),
+      fromQuality: previousQuality,
+      toQuality: newQuality,
+      atVideoTime: videoTime,
+    });
+
+    recordCriticalEvent("quality_change", {
+      fromQuality: previousQuality,
+      toQuality: newQuality,
+      videoTime: videoTime,
+    });
+
+    lastQualityRef.current = newQuality;
+
+    setStats((prev) => ({
+      ...prev,
+      qualityChanges: [...prev.qualityChanges, newQuality],
+      currentQuality: newQuality,
+    }));
+
+    addUIEvent({
+      type: "qualityChange",
+      label: `📺 Quality: ${previousQuality} → ${newQuality}`,
+      color: "#3b82f6",
+    });
+  };
 
   const initPlayer = (id = videoId) => {
-    if (ytPlayerContainerRef.current && window.YT) {
+    if (playerTypeRef.current === PLAYER_TYPE.JWPLAYER) {
+      const url = videoUrl; // Should be the full URL in this mode
+      initJWPlayer(url);
+      return;
+    }
+
+    if (playerRef.current && window.YT) {
       try {
         if (window.player && typeof window.player.destroy === "function") {
           window.player.destroy();
         }
+        // Clear the player container
+        playerRef.current.innerHTML = '';
 
-        window.player = new window.YT.Player(ytPlayerContainerRef.current, {
+        window.player = new window.YT.Player(playerRef.current, {
           height: "500",
           width: "100%",
           videoId: id,
@@ -789,32 +1142,37 @@ const QoETrackerDemo = () => {
         });
 
         setTimeout(() => {
-          if (window.player && window.player.getPlayerState() === -1) {
-            console.error("🎮 Video failed to load - possibly invalid ID");
-            errorsRef.current.push({
-              code: "LOADING_FAILED",
-              message: "Video failed to load - possibly invalid ID",
-              timestamp: new Date().toISOString(),
-              atVideoTime: 0,
-            });
+          try {
+            if (window.player && typeof window.player.getPlayerState === 'function' && window.player.getPlayerState() === -1) {
+              console.error("🎮 Video failed to load - possibly invalid ID");
+              errorsRef.current.push({
+                code: "LOADING_FAILED",
+                message: "Video failed to load - possibly invalid ID",
+                timestamp: new Date().toISOString(),
+                atVideoTime: 0,
+              });
 
-            recordCriticalEvent("loading_error", {
-              type: "invalid_video_id",
-              videoId: id,
-              error: "Video failed to load - possibly invalid ID",
-              severity: "critical",
-            });
+              // ✅ CRITICAL: Record loading error immediately to backend
+              recordCriticalEvent("loading_error", {
+                type: "invalid_video_id",
+                videoId: id,
+                error: "Video failed to load - possibly invalid ID",
+                severity: "critical",
+              });
 
-            setStats((prev) => ({
-              ...prev,
-              errorCount: prev.errorCount + 1,
-            }));
+              setStats((prev) => ({
+                ...prev,
+                errorCount: prev.errorCount + 1,
+              }));
 
-            addUIEvent({
-              type: "loadingError",
-              label: "❌ VIDEO LOAD FAILED",
-              color: "#dc2626",
-            });
+              addUIEvent({
+                type: "loadingError",
+                label: "❌ VIDEO LOAD FAILED",
+                color: "#dc2626",
+              });
+            }
+          } catch (error) {
+            console.error("Error checking player state:", error);
           }
         }, 3000);
       } catch (error) {
@@ -826,6 +1184,7 @@ const QoETrackerDemo = () => {
           atVideoTime: 0,
         });
 
+        // ✅ CRITICAL: Record initialization error immediately to backend
         recordCriticalEvent("initialization_error", {
           error: error.message,
           videoId: id,
@@ -866,40 +1225,46 @@ const QoETrackerDemo = () => {
     };
 
     const state = stateMap[event.data];
-    console.log("🎮 YouTube Event: STATE CHANGE", {
+    console.log("🎮 Player Event: STATE CHANGE", {
       state,
       rawState: event.data,
+      playerType: playerTypeRef.current
     });
 
     if (event.data === 3) {
       // BUFFERING START
-      console.warn("⚠️ BUFFERING DETECTED");
+      console.warn("⏳ BUFFERING DETECTED");
 
-      // NEW: Proactively start session on first buffering if not already started
       if (!sessionIdRef.current && !isStartingSessionRef.current) {
         console.log("🎯 First BUFFERING detected → starting session");
         startSession();
       }
 
-      bufferingStartRef.current = Date.now();
-      setStats((prev) => ({
-        ...prev,
-        bufferingCount: prev.bufferingCount + 1,
-      }));
-      addUIEvent({
-        type: "stateChange",
-        label: "⏳ BUFFERING STARTED",
-        color: "#ef4444",
-      });
+      if (!bufferingStartRef.current) {
+        bufferingStartRef.current = Date.now();
+        setStats((prev) => ({
+          ...prev,
+          bufferingCount: prev.bufferingCount + 1,
+        }));
+        addUIEvent({
+          type: "stateChange",
+          label: "⏳ BUFFERING STARTED",
+          color: "#ef4444",
+        });
+      }
     } else if (event.data === 1) {
       // PLAYING
       if (bufferingStartRef.current) {
         const duration = (Date.now() - bufferingStartRef.current) / 1000;
         console.log(`⏱️ Buffering Duration: ${duration.toFixed(2)}s`);
 
+        const currentTime = (playerType === PLAYER_TYPE.JWPLAYER && window.jwInstance)
+          ? Math.floor(window.jwInstance.getPosition() || 0)
+          : Math.floor(window.player?.getCurrentTime() || 0);
+
         bufferingEventsRef.current.push({
-          startTime: Math.floor(window.player.getCurrentTime()),
-          endTime: Math.floor(window.player.getCurrentTime()),
+          startTime: currentTime,
+          endTime: currentTime,
           duration: Number(duration.toFixed(2)),
           quality: stats.currentQuality,
           timestamp: new Date().toISOString(),
@@ -908,7 +1273,7 @@ const QoETrackerDemo = () => {
         recordCriticalEvent("buffering_end", {
           duration: Number(duration.toFixed(2)),
           quality: stats.currentQuality,
-          videoTime: Math.floor(window.player.getCurrentTime()),
+          videoTime: currentTime,
         });
 
         bufferingStartRef.current = null;
@@ -925,7 +1290,6 @@ const QoETrackerDemo = () => {
         startSession();
       }
 
-      // RESUME LOGIC: If we have a saved position from network failure, seek back to it
       if (resumePositionRef.current !== null) {
         const seekTo = resumePositionRef.current;
         console.log(`🔄 Resuming playback from ${seekTo}s`);
@@ -936,19 +1300,33 @@ const QoETrackerDemo = () => {
           color: "#10b981",
         });
 
-        // Seek and clear ref
-        window.player?.seekTo(seekTo, true);
+        if (playerType === PLAYER_TYPE.JWPLAYER && window.jwInstance) {
+          window.jwInstance.seek(seekTo);
+        } else {
+          window.player?.seekTo(seekTo, true);
+        }
         resumePositionRef.current = null;
       }
 
       if (!timerRef.current) {
         timerRef.current = setInterval(() => {
-          if (window.player && window.player.getPlayerState() === 1) {
+          let isPlaying = false;
+          let currentTime = 0;
+
+          if (playerType === PLAYER_TYPE.JWPLAYER && window.jwInstance) {
+            isPlaying = window.jwInstance.getState() === 'playing';
+            currentTime = window.jwInstance.getPosition();
+          } else if (window.player && typeof window.player.getPlayerState === 'function') {
+            isPlaying = window.player.getPlayerState() === 1;
+            currentTime = window.player.getCurrentTime();
+          }
+
+          if (isPlaying) {
             totalWatchTimeRef.current += 1;
             setStats((prev) => ({
               ...prev,
               totalWatchTime: totalWatchTimeRef.current,
-              videoTime: Math.floor(window.player.getCurrentTime()),
+              videoTime: Math.floor(currentTime),
             }));
           }
         }, 1000);
@@ -967,11 +1345,34 @@ const QoETrackerDemo = () => {
         timerRef.current = null;
       }
     } else if (event.data === 0) {
-      // ENDED
-      console.log("⏹️ Video ended");
+      // ✅ FIX 3: PROPERLY DETECT COMPLETION FOR JWPLAYER
+      console.log("✅ Video ended");
+
+      let currentTime = 0;
+      let videoDuration = 1;
+      let completedPercentage = 0;
+
+      if (playerType === PLAYER_TYPE.JWPLAYER && window.jwInstance) {
+        currentTime = window.jwInstance.getPosition() || 0;
+        videoDuration = window.jwInstance.getDuration() || 1;
+        // For JWPlayer, when 'complete' event fires, consider it 100% completed
+        completedPercentage = 100;
+      } else {
+        currentTime = window.player?.getCurrentTime() || 0;
+        videoDuration = window.player?.getDuration() || 1;
+        completedPercentage = Math.round((currentTime / videoDuration) * 100);
+      }
+
+      console.log(`📊 Completion Status:`, {
+        currentTime,
+        videoDuration,
+        completedPercentage,
+        playerType: playerTypeRef.current
+      });
+
       addUIEvent({
         type: "stateChange",
-        label: "⏹️ VIDEO ENDED",
+        label: `⏹️ VIDEO ENDED (${completedPercentage}% watched)`,
         color: "#8b5cf6",
       });
 
@@ -979,6 +1380,7 @@ const QoETrackerDemo = () => {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+
       const activeSessionId = sessionIdRef.current;
 
       if (activeSessionId) {
@@ -1063,6 +1465,7 @@ const QoETrackerDemo = () => {
 
     errorsRef.current.push(errorObject);
 
+    // ✅ CRITICAL: Record error immediately to backend
     recordCriticalEvent("playback_error", {
       errorCode: String(event.data),
       errorMessage: errorMsg,
@@ -1316,6 +1719,19 @@ const QoETrackerDemo = () => {
     color: "#fff",
     fontSize: "14px",
   };
+  const logErrorPersistence = (eventType, sessionId, data) => {
+    console.group(`📊 ERROR PERSISTENCE LOG - ${eventType}`);
+    console.log(`Event Type: ${eventType}`);
+    console.log(`Session ID: ${sessionId}`);
+    console.log(`Event Data:`, data);
+    console.log(`Timestamp: ${new Date().toISOString()}`);
+    // ✅ FIXED: Safe check for window.player existence
+    const videoTime = (window.player && typeof window.player.getCurrentTime === 'function')
+      ? Math.floor(window.player.getCurrentTime())
+      : 0;
+    console.log(`Video Time: ${videoTime}s`);
+    console.groupEnd();
+  };
 
   return (
     <div style={mainStyle}>
@@ -1331,8 +1747,17 @@ const QoETrackerDemo = () => {
             marginBottom: "24px",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-            <h1 style={{ ...titleStyle, marginBottom: 0, fontSize: "24px" }}>🎯 Single Player QoE Tracking</h1>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              flexWrap: "wrap",
+            }}
+          >
+            <h1 style={{ ...titleStyle, marginBottom: 0, fontSize: "24px" }}>
+              🎯 Single Player QoE Tracking
+            </h1>
             <button
               onClick={() => setShowGuide(!showGuide)}
               style={{
@@ -1347,63 +1772,100 @@ const QoETrackerDemo = () => {
                 display: "flex",
                 alignItems: "center",
                 gap: "6px",
-                transition: "all 0.2s"
+                transition: "all 0.2s",
               }}
             >
               📋 {showGuide ? "Hide" : "Show"} Guide
-              <span style={{
-                transform: showGuide ? "rotate(180deg)" : "rotate(0deg)",
-                transition: "transform 0.2s",
-                display: "inline-block"
-              }}>▼</span>
+              <span
+                style={{
+                  transform: showGuide ? "rotate(180deg)" : "rotate(0deg)",
+                  transition: "transform 0.2s",
+                  display: "inline-block",
+                }}
+              >
+                ▼
+              </span>
             </button>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", width: "100%", md: { width: "auto" } }}>
-            {/* NEW: Device platform indicator */}
-            <div style={{
+          <div
+            style={{
               display: "flex",
               alignItems: "center",
-              gap: "8px",
-              background: "#334155",
-              padding: "8px 12px",
-              borderRadius: "6px",
-              border: "1px solid #475569",
-              flex: "1 1 auto"
-            }}>
+              gap: "12px",
+              flexWrap: "wrap",
+              width: "100%",
+              md: { width: "auto" },
+            }}
+          >
+            {/* NEW: Device platform indicator */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                background: "#334155",
+                padding: "8px 12px",
+                borderRadius: "6px",
+                border: "1px solid #475569",
+                flex: "1 1 auto",
+              }}
+            >
               <span style={{ fontSize: "20px" }}>
-                {platformType === 'mobile' ? '📱' : platformType === 'tv' ? '📺' : '💻'}
+                {platformType === "mobile"
+                  ? "📱"
+                  : platformType === "tv"
+                    ? "📺"
+                    : "💻"}
               </span>
               <div>
-                <div style={{ color: "#94a3b8", fontSize: "10px", textTransform: "uppercase" }}>
+                <div
+                  style={{
+                    color: "#94a3b8",
+                    fontSize: "10px",
+                    textTransform: "uppercase",
+                  }}
+                >
                   Platform
                 </div>
-                <div style={{ color: "#fff", fontSize: "14px", fontWeight: "600" }}>
+                <div
+                  style={{ color: "#fff", fontSize: "14px", fontWeight: "600" }}
+                >
                   {platformType.charAt(0).toUpperCase() + platformType.slice(1)}
                 </div>
               </div>
             </div>
 
-            <div style={{
-              background: "#334155",
-              padding: "8px 12px",
-              borderRadius: "6px",
-              border: "1px solid #475569",
-              flex: "2 1 auto",
-              minWidth: "150px"
-            }}>
-              <div style={{ color: "#94a3b8", fontSize: "10px", textTransform: "uppercase" }}>
+            <div
+              style={{
+                background: "#334155",
+                padding: "8px 12px",
+                borderRadius: "6px",
+                border: "1px solid #475569",
+                flex: "2 1 auto",
+                minWidth: "150px",
+              }}
+            >
+              <div
+                style={{
+                  color: "#94a3b8",
+                  fontSize: "10px",
+                  textTransform: "uppercase",
+                }}
+              >
                 Device ID
               </div>
-              <div style={{
-                color: "#fff",
-                fontSize: "12px",
-                fontFamily: "monospace",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap"
-              }}>
-                {selectedUserId || 'Generating...'}
+              <div
+                style={{
+                  color: "#fff",
+                  fontSize: "12px",
+                  fontFamily: "monospace",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {selectedUserId || "Generating..."}
               </div>
             </div>
           </div>
@@ -1418,7 +1880,7 @@ const QoETrackerDemo = () => {
               padding: "24px",
               borderRadius: "8px",
               marginBottom: "24px",
-              animation: "fadeIn 0.3s ease-out"
+              animation: "fadeIn 0.3s ease-out",
             }}
           >
             <h3
@@ -1442,22 +1904,28 @@ const QoETrackerDemo = () => {
                 <strong>Open Browser Console:</strong> Press F12 → Console tab
               </li>
               <li>
-                <strong>Load Video:</strong> Paste YouTube URL and click "Load Video"
+                <strong>Load Video:</strong> Paste YouTube URL and click "Load
+                Video"
               </li>
               <li>
-                <strong>Play Video:</strong> Session automatically starts when you play
+                <strong>Play Video:</strong> Session automatically starts when
+                you play
               </li>
               <li>
-                <strong>Error Tracking:</strong> ALL errors are now captured (network, crashes)
+                <strong>Error Tracking:</strong> ALL errors are now captured
+                (network, crashes)
               </li>
               <li>
-                <strong>Watch Console:</strong> See real-time event logs with session ID and offline queue status
+                <strong>Watch Console:</strong> See real-time event logs with
+                session ID and offline queue status
               </li>
               <li>
-                <strong>Offline Support:</strong> Events queue locally and sync when network returns
+                <strong>Offline Support:</strong> Events queue locally and sync
+                when network returns
               </li>
               <li>
-                <strong>End Session:</strong> Automatically ends when video finishes
+                <strong>End Session:</strong> Automatically ends when video
+                finishes
               </li>
             </ol>
           </div>
@@ -1465,47 +1933,85 @@ const QoETrackerDemo = () => {
 
         {/* NEW: Detailed Device Information */}
         {deviceFingerprint && (
-          <div style={{
-            background: "rgba(30, 41, 59, 0.5)",
-            border: "1px solid #334155",
-            borderRadius: "8px",
-            padding: "16px",
-            marginBottom: "24px",
-            fontSize: "12px"
-          }}>
-            <h3 style={{ color: "#3b82f6", fontWeight: "bold", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          <div
+            style={{
+              background: "rgba(30, 41, 59, 0.5)",
+              border: "1px solid #334155",
+              borderRadius: "8px",
+              padding: "16px",
+              marginBottom: "24px",
+              fontSize: "12px",
+            }}
+          >
+            <h3
+              style={{
+                color: "#3b82f6",
+                fontWeight: "bold",
+                marginBottom: "12px",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
               🔍 Device Technical Details
             </h3>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                gap: "16px",
+              }}
+            >
               <div>
                 <span style={{ color: "#94a3b8" }}>User Agent:</span>
-                <div style={{ color: "#cbd5e1", marginTop: "4px", wordBreak: "break-all", fontFamily: "monospace" }}>
+                <div
+                  style={{
+                    color: "#cbd5e1",
+                    marginTop: "4px",
+                    wordBreak: "break-all",
+                    fontFamily: "monospace",
+                  }}
+                >
                   {deviceFingerprint.details.userAgent}
                 </div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "8px",
+                }}
+              >
                 <div>
                   <span style={{ color: "#94a3b8" }}>OS Platform:</span>
-                  <div style={{ color: "#fff" }}>{deviceFingerprint.details.platform}</div>
+                  <div style={{ color: "#fff" }}>
+                    {deviceFingerprint.details.platform}
+                  </div>
                 </div>
                 <div>
                   <span style={{ color: "#94a3b8" }}>Resolution:</span>
-                  <div style={{ color: "#fff" }}>{deviceFingerprint.details.screenResolution}</div>
+                  <div style={{ color: "#fff" }}>
+                    {deviceFingerprint.details.screenResolution}
+                  </div>
                 </div>
                 <div>
                   <span style={{ color: "#94a3b8" }}>Language:</span>
-                  <div style={{ color: "#fff" }}>{deviceFingerprint.details.language}</div>
+                  <div style={{ color: "#fff" }}>
+                    {deviceFingerprint.details.language}
+                  </div>
                 </div>
                 <div>
                   <span style={{ color: "#94a3b8" }}>Timezone:</span>
-                  <div style={{ color: "#fff" }}>{deviceFingerprint.details.timezone}</div>
+                  <div style={{ color: "#fff" }}>
+                    {deviceFingerprint.details.timezone}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         )}
         <p style={{ color: "#94a3b8", marginBottom: "8px" }}>
-          Real-time Quality of Experience - Single Player Tracking (Mobile, Web, TV)
+          Real-time Quality of Experience - Single Player Tracking (Mobile, Web,
+          TV)
         </p>
 
         {/* Database Sync Status */}
@@ -1517,12 +2023,13 @@ const QoETrackerDemo = () => {
                 : syncStatus === "error"
                   ? "#7f1d1d"
                   : "transparent",
-            border: `2px solid ${syncStatus === "success"
-              ? "#10b981"
-              : syncStatus === "error"
-                ? "#ef4444"
-                : "transparent"
-              }`,
+            border: `2px solid ${
+              syncStatus === "success"
+                ? "#10b981"
+                : syncStatus === "error"
+                  ? "#ef4444"
+                  : "transparent"
+            }`,
             padding: "8px 12px",
             borderRadius: "6px",
             marginBottom: "12px",
@@ -1548,7 +2055,8 @@ const QoETrackerDemo = () => {
               fontSize: "12px",
             }}
           >
-            📦 {offlineQueuedEvents} event(s) queued offline - waiting to sync...
+            📦 {offlineQueuedEvents} event(s) queued offline - waiting to
+            sync...
           </div>
         )}
 
@@ -1561,14 +2069,14 @@ const QoETrackerDemo = () => {
               marginBottom: "16px",
             }}
           >
-            Load YouTube Video
+            Video Source Setup
           </h2>
           <div style={{ display: "flex", gap: "12px", marginBottom: "12px" }}>
             <input
               type="text"
               value={videoUrl}
               onChange={(e) => setVideoUrl(e.target.value)}
-              placeholder="Enter YouTube URL or Video ID"
+              placeholder="YouTube URL, ID, or .mp4/.m3u8 link"
               style={inputStyle}
             />
             <button onClick={handleLoadVideo} style={buttonStyle}>
@@ -1576,7 +2084,8 @@ const QoETrackerDemo = () => {
             </button>
           </div>
           <p style={{ color: "#94a3b8", fontSize: "12px" }}>
-            Supports: Full URLs, Short URLs (youtu.be), Shorts, or Video IDs
+            ✅ <strong>Last video saved:</strong> Automatically reloads your
+            last session.
           </p>
           {sessionId && (
             <p style={{ color: "#10b981", fontSize: "11px", marginTop: "8px" }}>
@@ -1604,7 +2113,11 @@ const QoETrackerDemo = () => {
                 minHeight: window.innerWidth > 768 ? "400px" : "240px",
               }}
             >
-              <div ref={ytPlayerContainerRef} style={{ width: "100%" }}></div>
+              <div
+                ref={playerRef}
+                id="player-container"
+                style={{ width: "100%" }}
+              ></div>
             </div>
 
             {videoId && (
@@ -1934,13 +2447,16 @@ const QoETrackerDemo = () => {
                   <XAxis dataKey="name" stroke="#94a3b8" />
                   <YAxis stroke="#94a3b8" />
                   <Tooltip
-                    formatter={(value, name, props) => [`Total: ${value} times`, props.payload.name]}
+                    formatter={(value, name, props) => [
+                      `Total: ${value} times`,
+                      props.payload.name,
+                    ]}
                     contentStyle={{
                       backgroundColor: "#1e293b",
                       border: "1px solid #475569",
                       color: "#fff",
                       fontSize: "12px",
-                      padding: "8px"
+                      padding: "8px",
                     }}
                   />
                   <Bar dataKey="value" fill="#3b82f6" />
@@ -1988,13 +2504,16 @@ const QoETrackerDemo = () => {
                     ))}
                   </Pie>
                   <Tooltip
-                    formatter={(value, name) => [`Watched ${value} times`, name]}
+                    formatter={(value, name) => [
+                      `Watched ${value} times`,
+                      name,
+                    ]}
                     contentStyle={{
                       backgroundColor: "#1e293b",
                       border: "1px solid #475569",
                       color: "#fff",
                       fontSize: "12px",
-                      padding: "8px"
+                      padding: "8px",
                     }}
                   />
                 </PieChart>
@@ -2064,7 +2583,6 @@ const QoETrackerDemo = () => {
             )}
           </div>
         </div>
-
       </div>
     </div>
   );

@@ -30,7 +30,8 @@ router.post('/session/start', async (req, res) => {
       cdnEndpoint: cdnEndpoint || {},
       userAgent: req.get('user-agent'),
       ipAddress: ip,
-      status: 'active'
+      status: 'active',
+      playerType: req.body.playerType || 'youtube'
     });
 
     const savedSession = await newSession.save();
@@ -68,15 +69,22 @@ router.post('/session/:sessionId/event', async (req, res) => {
 
     // Only store critical events
     const criticalEvents = [
-      'buffering_start', 'buffering_end', 'quality_change',
-      'error', 'playback_error', 'network_error', 'loading_error', 'initialization_error',
-      'crash'
+      'buffering_start',
+      'buffering_end',
+      'quality_change',
+      'error',
+      'crash',
+      'playback_error',
+      'network_error',
+      'network_recovery',
+      'loading_error',
+      'initialization_error'
     ];
 
     if (!criticalEvents.includes(eventType)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid event type. Only critical events are stored.'
+        error: `Invalid event type: ${eventType}. Only critical events are stored.`
       });
     }
 
@@ -91,25 +99,51 @@ router.post('/session/:sessionId/event', async (req, res) => {
 
     await newEvent.save();
 
-    // ✅ NEW: Persist to current session document for real-time dashboard updates
+    // ✅ FIXED: Persist to current session document for real-time dashboard updates
     const session = await QoESession.findOne({ sessionId });
     if (session) {
-      if (eventType === 'error' || eventType === 'playback_error' || eventType === 'network_error' || eventType === 'loading_error' || eventType === 'initialization_error') {
+      // Define error and crash event types
+      const isError = ['error', 'playback_error', 'network_error', 'loading_error', 'initialization_error'].includes(eventType);
+      const isCrash = eventType === 'crash';
+
+      // ==================== HANDLE ALL ERROR TYPES ====================
+      if (isError || isCrash) {
+        console.log(`🔴 Processing ${isCrash ? 'CRASH' : 'ERROR'} event: ${eventType}`);
+
+        // 1. Add to recordedErrors (rich metadata) - ALL errors go here
         session.addRecordedError(
           eventData.type || eventType,
           eventData.errorMessage || eventData.message || 'Unknown error',
           eventData.errorCode || eventData.code || '0',
-          eventData.videoTime || 0,
-          eventData.severity || (eventType === 'loading_error' || eventType === 'initialization_error' ? 'critical' : 'normal')
+          eventData.videoTime || eventData.atVideoTime || 0,
+          eventData.severity || (isCrash ? 'critical' : 'normal')
         );
-      } else if (eventType === 'crash') {
-        session.addRecordedCrash(
-          eventData.type || 'app_crash',
-          eventData.message || 'Application crash',
-          eventData.severity || 'critical'
-        );
-      } else if (eventType === 'buffering_end') {
-        // Update buffering metrics in session
+
+        // 2. Add to playbackErrors (legacy array used by some dashboard components)
+        session.playbackErrors.push({
+          code: String(eventData.errorCode || eventData.code || '0'),
+          message: eventData.errorMessage || eventData.message || 'Unknown error',
+          timestamp: new Date(),
+          atVideoTime: eventData.videoTime || eventData.atVideoTime || 0
+        });
+
+        // 3. If it's a crash, ALSO add to recordedCrashes
+        if (isCrash) {
+          session.addRecordedCrash(
+            eventData.type || 'app_crash',
+            eventData.message || 'Application crash',
+            eventData.severity || 'critical'
+          );
+          console.log(`🚨 Crash also recorded in recordedCrashes`);
+        }
+
+        // 4. Update total error metrics
+        session.totalErrors = (session.totalErrors || 0) + 1;
+
+        console.log(`✅ Error metrics updated: totalErrors=${session.totalErrors}, recordedErrorCount=${session.recordedErrorCount}, recordedCrashCount=${session.recordedCrashCount}`);
+      }
+      // ==================== HANDLE BUFFERING ====================
+      else if (eventType === 'buffering_end') {
         session.bufferingEvents.push({
           startTime: (eventData.videoTime || 0) - (eventData.duration || 0),
           endTime: eventData.videoTime || 0,
@@ -120,8 +154,10 @@ router.post('/session/:sessionId/event', async (req, res) => {
         });
         session.totalBufferingTime = (session.totalBufferingTime || 0) + (eventData.duration || 0);
         session.totalBufferingCount = (session.totalBufferingCount || 0) + 1;
-      } else if (eventType === 'quality_change') {
-        // Update quality change metrics in session
+        console.log(`⏳ Buffering event recorded: duration=${eventData.duration}s, total=${session.totalBufferingCount}`);
+      }
+      // ==================== HANDLE QUALITY CHANGES ====================
+      else if (eventType === 'quality_change') {
         session.qualityChanges.push({
           timestamp: new Date(),
           fromQuality: eventData.fromQuality || 'unknown',
@@ -130,10 +166,13 @@ router.post('/session/:sessionId/event', async (req, res) => {
         });
         session.totalQualityChanges = (session.totalQualityChanges || 0) + 1;
         session.finalQuality = eventData.toQuality;
+        console.log(`📺 Quality change recorded: ${eventData.fromQuality} → ${eventData.toQuality}`);
       }
 
       await session.save();
       console.log(`🔗 Event metrics linked to session ${sessionId}`);
+    } else {
+      console.warn(`⚠️ Session ${sessionId} not found - event recorded but not linked`);
     }
 
     console.log(`✅ Event recorded: ${eventType} for session ${sessionId}`);
@@ -145,6 +184,9 @@ router.post('/session/:sessionId/event', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error recording event:', error);
+    if (error.name === 'ValidationError') {
+      console.error('⚠️ Validation details:', JSON.stringify(error.errors, null, 2));
+    }
     res.status(500).json({
       success: false,
       error: error.message
@@ -163,7 +205,10 @@ router.post('/session/:sessionId/end', async (req, res) => {
       bufferingEvents,
       qualityChanges,
       playbackErrors,
-      finalQuality
+      finalQuality,
+      startupTime, // NEW
+      avgBitrate,  // NEW
+      maxBitrate   // NEW
     } = req.body;
 
     // Fetch session
@@ -180,12 +225,40 @@ router.post('/session/:sessionId/end', async (req, res) => {
     const endTime = new Date();
     const totalSessionDuration = Math.round((endTime - session.startTime) / 1000); // in seconds
 
+    session.endTime = endTime;
+    session.totalSessionDuration = totalSessionDuration;
+
+    session.totalWatchDuration = totalWatchDuration;
+    session.completedPercentage = completedPercentage;
+    session.lastPlaybackPosition = lastPlaybackPosition;
+
+    // Save Deep Metrics
+    if (startupTime) session.startupTime = startupTime;
+    if (avgBitrate) session.avgBitrate = avgBitrate;
+    if (maxBitrate) session.maxBitrate = maxBitrate;
+
+    // Update Buffering Stats
+    session.bufferingEvents = bufferingEvents; // Overwrite with client-side calculated events
+
+    // Define as local variables for use in findOneAndUpdate
     const totalBufferingTime = bufferingEvents.reduce((sum, e) => sum + (e.duration || 0), 0);
     const totalBufferingCount = bufferingEvents.length;
+
+    session.totalBufferingTime = totalBufferingTime;
+    session.totalBufferingCount = totalBufferingCount;
+
     const bufferingPercentage = totalSessionDuration > 0
       ? parseFloat(((totalBufferingTime / totalSessionDuration) * 100).toFixed(2))
       : 0;
+    session.bufferingPercentage = bufferingPercentage;
 
+    // Update Quality Change Stats
+    session.qualityChanges = qualityChanges; // Overwrite with client-side calculated changes
+    session.totalQualityChanges = qualityChanges.length;
+    session.finalQuality = finalQuality;
+
+    // Update Error Stats
+    session.playbackErrors = playbackErrors; // Overwrite with client-side calculated errors
     const totalErrorCount = playbackErrors.length;
     const errorRate = totalSessionDuration > 0
       ? parseFloat(((totalErrorCount / totalSessionDuration) * 100).toFixed(2))
@@ -224,6 +297,7 @@ router.post('/session/:sessionId/end', async (req, res) => {
     );
 
     console.log(`✅ Session ended: ${sessionId}, QoE Score: ${qoeScore}`);
+    console.log(`📊 Final error counts: totalErrors=${updatedSession.totalErrors}, recordedErrors=${updatedSession.recordedErrorCount}, crashes=${updatedSession.recordedCrashCount}`);
 
     res.json({
       success: true,
@@ -270,7 +344,6 @@ router.get('/session/:sessionId', async (req, res) => {
 // ✅ GET - Get overall analytics WITH DATE RANGE FILTERING
 router.get('/analytics', async (req, res) => {
   try {
-    // Extract parameters from query string
     const { startDate, endDate, userId, videoId, error } = req.query;
 
     console.log('📊 Fetching analytics with filters:', {
@@ -285,11 +358,9 @@ router.get('/analytics', async (req, res) => {
     let dateFilter = {};
 
     if (startDate && endDate) {
-      // Convert string dates to Date objects
       const start = new Date(startDate);
       const end = new Date(endDate);
 
-      // Validate dates
       if (isNaN(start.getTime()) || isNaN(end.getTime())) {
         console.warn('⚠️ Invalid date format provided');
         return res.status(400).json({
@@ -299,11 +370,7 @@ router.get('/analytics', async (req, res) => {
         });
       }
 
-      // Normalize dates to avoid timezone issues
-
-      start.setHours(0, 0, 0, 0);        // Set to START of day (00:00:00)
-
-      // Set end date to END of day (23:59:59)
+      start.setHours(0, 0, 0, 0);
       end.setHours(23, 59, 59, 999);
 
       dateFilter = {
@@ -325,7 +392,7 @@ router.get('/analytics', async (req, res) => {
           error: 'Invalid startDate format. Use YYYY-MM-DD format.'
         });
       }
-      start.setHours(0, 0, 0, 0);  // Set to START of day
+      start.setHours(0, 0, 0, 0);
       dateFilter = {
         startTime: { $gte: start }
       };
@@ -343,30 +410,28 @@ router.get('/analytics', async (req, res) => {
       };
     }
 
-    // Combine status filter with dynamic filters
     const query = {
       ...dateFilter
     };
 
-    // If no specific error filter, we still only want sessions that are "finalized" OR "active"
-    // (excluding any potential legacy statuses if any)
-    if (!query.status) {
-      query.status = { $in: ['active', 'completed', 'abandoned', 'error'] };
-    }
+    // ✅ FIX: Don't filter by status - include ALL sessions
+    // Remove this line: query.status = { $in: ['active', 'completed', 'abandoned', 'error'] };
 
     if (userId) query.userId = userId;
     if (videoId) query.videoId = videoId;
     if (error) {
-      // Filter sessions that have at least one playback error with this message
       query['playbackErrors.message'] = error;
     }
 
     console.log('🔍 Query:', JSON.stringify(query, null, 2));
 
-    // Fetch sessions
     const sessions = await QoESession.find(query);
 
     console.log(`✅ Found ${sessions.length} sessions matching criteria`);
+
+    // Log player types found
+    const playerTypesFound = [...new Set(sessions.map(s => s.playerType || 'youtube'))];
+    console.log(`🎮 Player types in results:`, playerTypesFound);
 
     if (sessions.length === 0) {
       return res.json({
@@ -387,16 +452,19 @@ router.get('/analytics', async (req, res) => {
           networkTypeBreakdown: {},
           topErrorMessages: {},
           topErrorTypes: {},
+          playerTypeBreakdown: {},
           dateRange: {
             from: startDate || 'All time',
             to: endDate || 'Today',
             sessionsFound: 0
+          },
+          availableFilters: {
+            users: [],
+            videos: []
           }
         }
       });
     }
-
-    // ==================== AGGREGATE METRICS ====================
 
     // Aggregated metrics
     const totalEvents = sessions.length;
@@ -407,8 +475,6 @@ router.get('/analytics', async (req, res) => {
     const totalBufferingEvents = sessions.reduce((sum, s) => sum + (s.totalBufferingCount || 0), 0);
     const totalBufferingTime = sessions.reduce((sum, s) => sum + (s.totalBufferingTime || 0), 0);
 
-    // Count errors - FIXED: Use stored session counts
-    // Count errors - FIXED: Combine recorded events and playback errors for consistency
     const totalRecordedErrors = sessions.reduce((sum, s) => {
       const explicitErrors = (s.recordedErrorCount || 0);
       const reportedPlaybackErrors = (s.playbackErrors?.length || 0);
@@ -417,7 +483,6 @@ router.get('/analytics', async (req, res) => {
 
     const totalRecordedCrashes = sessions.reduce((sum, s) => sum + (s.recordedCrashCount || 0), 0);
 
-    // A session is "affected" if it has ANY error marker
     const sessionsWithErrors = sessions.filter(s =>
       (s.totalErrors || 0) > 0 ||
       (s.recordedErrorCount || 0) > 0 ||
@@ -429,25 +494,20 @@ router.get('/analytics', async (req, res) => {
     const totalQualityChanges = sessions.reduce((sum, s) => sum + (s.totalQualityChanges || 0), 0);
     const totalWatchDuration = sessions.reduce((sum, s) => sum + (s.totalWatchDuration || 0), 0);
 
-    // Calculate percentages
     const totalSessionDuration = sessions.reduce((sum, s) => sum + (s.totalSessionDuration || 0), 0);
     const bufferingPercentage = totalSessionDuration > 0
       ? parseFloat(((totalBufferingTime / totalSessionDuration) * 100).toFixed(2))
       : 0;
 
-    // REDEFINED: Error percentage is now % of sessions affected by errors
     const errorPercentage = totalEvents > 0
       ? parseFloat(((sessionsWithErrors / totalEvents) * 100).toFixed(2))
       : 0;
 
-    // Calculate averages based on FINISHED sessions only to avoid skewing
     const avgWatchDuration = totalFinishedCount > 0
       ? parseFloat((totalWatchDuration / totalFinishedCount).toFixed(2))
       : 0;
 
-    // ==================== BREAKDOWNS ====================
-
-    // Detailed User List
+    // User List
     const userMap = {};
     sessions.forEach(s => {
       if (!userMap[s.userId]) {
@@ -482,7 +542,7 @@ router.get('/analytics', async (req, res) => {
       totalWatchTime: u.totalWatchTime
     })).sort((a, b) => new Date(b.lastActive) - new Date(a.lastActive));
 
-    // Detailed Video List
+    // Video List
     const videoMap = {};
     sessions.forEach(s => {
       if (!videoMap[s.videoId]) {
@@ -511,12 +571,17 @@ router.get('/analytics', async (req, res) => {
       avgQoEScore: Math.round(v.avgQoE / v.plays)
     })).sort((a, b) => b.playCount - a.playCount);
 
-
-    // Aggregations
+    // Breakdowns
     const deviceBreakdown = {};
     const networkBreakdown = {};
     const errorTypeBreakdown = {};
-    const errorUserMap = {}; // Unique users affected by each error
+    const errorMessageBreakdown = {};
+
+    // ✅ FIX: Properly build playerTypeBreakdown
+    const playerTypeBreakdown = {};
+
+    const errorTypeSessions = {};
+    const errorMessageSessions = {};
 
     const statusBreakdown = {
       completed: 0,
@@ -524,60 +589,69 @@ router.get('/analytics', async (req, res) => {
     };
 
     sessions.forEach(s => {
-      // Status breakdown
       if (s.status === 'completed') statusBreakdown.completed++;
       else if (s.status === 'abandoned') statusBreakdown.abandoned++;
 
-      // Device breakdown
       const device = s.deviceType || 'unknown';
       deviceBreakdown[device] = (deviceBreakdown[device] || 0) + 1;
 
-      // Network breakdown
       const network = s.networkType || 'unknown';
       networkBreakdown[network] = (networkBreakdown[network] || 0) + 1;
 
-      // Error message breakdown (Count unique users affected)
+      // ✅ FIX: Count player types with proper fallback
+      const playerType = s.playerType || 'youtube';
+      playerTypeBreakdown[playerType] = (playerTypeBreakdown[playerType] || 0) + 1;
+
+      console.log(`📊 Session ${s.sessionId}: playerType = ${playerType}`);
+
       if (s.playbackErrors) {
         s.playbackErrors.forEach(e => {
           const message = e.message || `Error ${e.code}` || 'unknown';
-          if (!errorUserMap[message]) {
-            errorUserMap[message] = new Set();
+          if (!errorMessageSessions[message]) {
+            errorMessageSessions[message] = new Set();
           }
-          errorUserMap[message].add(s.userId);
+          errorMessageSessions[message].add(s.sessionId);
         });
       }
 
-      // Error type breakdown (Technical errors/crashes)
       if (s.recordedErrors) {
         s.recordedErrors.forEach(e => {
           const type = e.type || 'unknown';
-          errorTypeBreakdown[type] = (errorTypeBreakdown[type] || 0) + 1;
+          if (!errorTypeSessions[type]) {
+            errorTypeSessions[type] = new Set();
+          }
+          errorTypeSessions[type].add(s.sessionId);
         });
       }
       if (s.recordedCrashes) {
         s.recordedCrashes.forEach(c => {
           const type = c.type || 'crash';
-          errorTypeBreakdown[type] = (errorTypeBreakdown[type] || 0) + 1;
+          if (!errorTypeSessions[type]) {
+            errorTypeSessions[type] = new Set();
+          }
+          errorTypeSessions[type].add(s.sessionId);
         });
       }
     });
 
-    const errorMessageBreakdown = {};
-    Object.entries(errorUserMap).forEach(([msg, users]) => {
-      errorMessageBreakdown[msg] = users.size; // Store user count instead of raw event count
+    // Convert sets to counts
+    Object.entries(errorTypeSessions).forEach(([type, sessions]) => {
+      errorTypeBreakdown[type] = sessions.size;
     });
 
+    Object.entries(errorMessageSessions).forEach(([msg, sessions]) => {
+      errorMessageBreakdown[msg] = sessions.size;
+    });
 
-
-    // ==================== BUILD RESPONSE ====================
+    console.log('🎮 Final playerTypeBreakdown:', playerTypeBreakdown);
 
     const analytics = {
       totalEvents,
       totalBufferingEvents,
       bufferingPercentage,
       totalErrors,
-      recordedErrors: totalRecordedErrors,      // ← NEW
-      recordedCrashes: totalRecordedCrashes,    // ← NEW
+      recordedErrors: totalRecordedErrors,
+      recordedCrashes: totalRecordedCrashes,
       errorPercentage,
       userCount: userList.length,
       videoCount: videoList.length,
@@ -586,34 +660,25 @@ router.get('/analytics', async (req, res) => {
       deviceBreakdown,
       networkTypeBreakdown: networkBreakdown,
       topErrorMessages: errorMessageBreakdown,
-      topErrorTypes: errorTypeBreakdown,        // ← NEW
+      topErrorTypes: errorTypeBreakdown,
+      playerTypeBreakdown, // ✅ Now properly populated
       userList,
       videoList,
       statusBreakdown,
-      liveSessions: activeSessions          // ← NEW
+      liveSessions: activeSessions,
+      availableFilters: {
+        users: userList.map(u => ({ id: u.userId, label: u.userId })),
+        videos: videoList.map(v => ({ id: v.videoId, label: v.title }))
+      },
+      dateRange: {
+        from: startDate || 'All time',
+        to: endDate || 'Today',
+        sessionsFound: totalEvents
+      }
     };
 
-    // If no specific filters are applied, or even if they are, 
-    // we want to provide the lists for the dropdowns
-    // These come from ALL sessions (ignoring specific userId/videoId/error filters but respecting date)
-    // Actually, it's better to fetch these from the current resulting sessions 
-    // but the user might want to see ALL options available in that date range.
-
-    // For now, let's use the ones found in the CURRENT query to populate "Available Filters"
-    analytics.availableFilters = {
-      users: userList.map(u => ({ id: u.userId, label: u.userId })),
-      videos: videoList.map(v => ({ id: v.videoId, label: v.title }))
-    };
-
-    // Always include dateRange in response
-    analytics.dateRange = {
-      from: startDate || 'All time',
-      to: endDate || 'Today',
-      sessionsFound: totalEvents
-    };
-
-    console.log(`✅ Analytics generated:`, analytics);
-    console.log(`📅 Date range in response:`, analytics.dateRange);
+    console.log(`✅ Analytics generated with ${totalRecordedErrors} errors and ${totalRecordedCrashes} crashes`);
+    console.log(`🎮 Player types returned:`, Object.keys(playerTypeBreakdown));
 
     res.json({
       success: true,
@@ -635,7 +700,6 @@ router.get('/video/:videoId/analytics', async (req, res) => {
     const { videoId } = req.params;
     const { startDate, endDate } = req.query;
 
-    // Build date filter
     let dateFilter = {};
 
     if (startDate && endDate) {
@@ -659,7 +723,6 @@ router.get('/video/:videoId/analytics', async (req, res) => {
       };
     }
 
-    // Fetch sessions with filter
     const sessions = await QoESession.find({
       videoId,
       status: { $in: ['completed', 'abandoned'] },
@@ -675,7 +738,6 @@ router.get('/video/:videoId/analytics', async (req, res) => {
       });
     }
 
-    // Aggregate metrics
     const totalSessions = sessions.length;
     const avgWatchDuration = (sessions.reduce((sum, s) => sum + (s.totalWatchDuration || 0), 0) / totalSessions).toFixed(2);
     const avgCompletedPercentage = (sessions.reduce((sum, s) => sum + (s.completedPercentage || 0), 0) / totalSessions).toFixed(2);
@@ -683,25 +745,28 @@ router.get('/video/:videoId/analytics', async (req, res) => {
     const avgErrorRate = (sessions.reduce((sum, s) => sum + (s.errorRate || 0), 0) / totalSessions).toFixed(2);
     const avgQoEScore = (sessions.reduce((sum, s) => sum + (s.qoeScore || 0), 0) / totalSessions).toFixed(2);
 
-    // Device breakdown
     const deviceBreakdown = {};
     sessions.forEach(s => {
       deviceBreakdown[s.deviceType] = (deviceBreakdown[s.deviceType] || 0) + 1;
     });
 
-    // Network breakdown
     const networkBreakdown = {};
     sessions.forEach(s => {
       networkBreakdown[s.networkType] = (networkBreakdown[s.networkType] || 0) + 1;
     });
 
-    // Error breakdown by message
     const errorBreakdown = {};
     sessions.forEach(s => {
       s.playbackErrors.forEach(e => {
         const key = e.message || `Error ${e.code}` || 'unknown';
         errorBreakdown[key] = (errorBreakdown[key] || 0) + 1;
       });
+    });
+
+    const playerTypeBreakdown = {};
+    sessions.forEach(s => {
+      const type = s.playerType || 'youtube';
+      playerTypeBreakdown[type] = (playerTypeBreakdown[type] || 0) + 1;
     });
 
     const analytics = {
@@ -714,6 +779,7 @@ router.get('/video/:videoId/analytics', async (req, res) => {
       avgErrorRate,
       avgQoEScore,
       deviceBreakdown,
+      playerTypeBreakdown, // NEW
       networkBreakdown,
       errorBreakdown,
       dateRange: {

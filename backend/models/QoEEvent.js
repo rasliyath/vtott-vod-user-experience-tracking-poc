@@ -19,7 +19,6 @@ const qoeEventSchema = new mongoose.Schema({
   // Only store critical event types
   eventType: {
     type: String,
-    enum: ['buffering_start', 'buffering_end', 'quality_change', 'error', 'crash', 'session_end'],
     required: true
   },
 

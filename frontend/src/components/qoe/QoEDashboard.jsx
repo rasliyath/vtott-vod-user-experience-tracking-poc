@@ -188,9 +188,31 @@ const QoEDashboard = () => {
     value: count
   }));
 
-  const errorData = Object.entries(dashboardData.topErrorTypes || {}).map(([type, count]) => ({
-    name: type.replace(/_/g, ' ').charAt(0).toUpperCase() + type.replace(/_/g, ' ').slice(1),
+  const playerTypeData = Object.entries(dashboardData.playerTypeBreakdown || {}).map(([type, count]) => ({
+    name: type.charAt(0).toUpperCase() + type.slice(1),
     value: count
+  }));
+
+  const formatErrorName = (name) => {
+    const friendlyMap = {
+      'javascript_error': 'App Crashed',
+      'network_error': 'Network Lost',
+      'loading_error': 'Load Failed',
+      'offline': 'Network Offline'
+    };
+
+    if (friendlyMap[name]) return friendlyMap[name];
+
+    return name
+      .replace(/_/g, ' ')
+      .replace(/error/gi, 'Error')
+      .replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  const errorData = Object.entries(dashboardData.topErrorTypes || {}).map(([type, count]) => ({
+    name: formatErrorName(type),
+    value: count,
+    originalName: type
   }));
 
   const errorMessageData = Object.entries(dashboardData.topErrorMessages || {}).map(([msg, count]) => ({
@@ -468,6 +490,30 @@ const QoEDashboard = () => {
             )}
           </div>
 
+          {/* Player Type Distribution */}
+          <div className="bg-slate-700 p-6 rounded-lg">
+            <h2 className="text-xl font-bold text-white mb-4">Player Type Distribution</h2>
+            {playerTypeData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie data={playerTypeData} cx="50%" cy="50%" outerRadius={80} fill="#8884d8" dataKey="value">
+                    {playerTypeData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={['#FF0000', '#FF4655', '#2C3E50'][index % 3]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value, name) => [`${value} sessions properly tracked`, name]}
+                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-slate-400">No data available for this period</p>
+            )}
+          </div>
+
           {/* Device Distribution */}
           <div className="bg-slate-700 p-6 rounded-lg">
             <h2 className="text-xl font-bold text-white mb-4">Device Distribution</h2>
@@ -493,7 +539,7 @@ const QoEDashboard = () => {
           </div>
 
           {/* Network Type Distribution */}
-          <div className="bg-slate-700 p-6 rounded-lg">
+          <div ref ={errorsSectionRef}className="bg-slate-700 p-6 rounded-lg">
             <h2 className="text-xl font-bold text-white mb-4">Network Type Distribution</h2>
             {networkData.length > 0 ? (
               <ResponsiveContainer width="100%" height={300}>
@@ -519,40 +565,22 @@ const QoEDashboard = () => {
             <div className="bg-slate-700 p-6 rounded-lg">
               <h2 className="text-xl font-bold text-white mb-4">Error Types Distribution</h2>
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={errorData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
-                  <XAxis dataKey="name" stroke="#94a3b8" angle={-45} textAnchor="end" height={80} />
-                  <YAxis stroke="#94a3b8" />
+                <BarChart data={errorData} layout="vertical" margin={{ left: 40, right: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#475569" horizontal={false} />
+                  <XAxis type="number" stroke="#94a3b8" />
+                  <YAxis dataKey="name" type="category" stroke="#94a3b8" width={150} tick={{ fontSize: 12 }} />
                   <Tooltip
-                    formatter={(value, name, props) => [`${value} sessions affected by this type`, props.payload.name]}
+                    formatter={(value, name, props) => [`${value} sessions`, props.payload.name]}
                     contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
                     itemStyle={{ color: '#fff' }}
+                    cursor={{ fill: 'rgba(255, 255, 255, 0.1)' }}
                   />
-                  <Bar dataKey="value" fill="#ef4444" />
+                  <Bar dataKey="value" fill="#ef4444" radius={[0, 4, 4, 0]} barSize={20} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           )}
 
-          {/* Common Error Messages */}
-          {errorMessageData.length > 0 && (
-            <div ref={errorsSectionRef} className="bg-slate-700 p-6 rounded-lg scroll-mt-8">
-              <h2 className="text-xl font-bold text-white mb-4">Common Error Messages</h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={errorMessageData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
-                  <XAxis dataKey="name" stroke="#94a3b8" />
-                  <YAxis stroke="#94a3b8" />
-                  <Tooltip
-                    formatter={(value) => [`${value} sessions hit this error message`]}
-                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #3b82f6', color: '#fff', fontSize: '12px', borderRadius: '4px' }}
-                    itemStyle={{ color: '#fff' }}
-                  />
-                  <Bar dataKey="value" fill="#f59e0b" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
 
           {/* Quality Changes */}
           <div className="bg-slate-700 p-6 rounded-lg lg:col-span-2">
@@ -715,7 +743,7 @@ const QoEDashboard = () => {
                 <br />
                 <span className="text-xs mt-1 block">
                   <span className="text-green-400 font-bold">{dashboardData.statusBreakdown?.completed} completed watching</span> •
-                  <span className="text-orange-400"> {notCompletedCount} not completed</span> ({activeCount} active, {abandonedCount} abandoned)
+                  <span className="text-orange-400"> {notCompletedCount} not completed</span>
                 </span>
               </p>
             </div>
