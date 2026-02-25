@@ -7,7 +7,7 @@ const QoEEvent = require('../models/QoEEvent');
 // ✅ POST - Start new session
 router.post('/session/start', async (req, res) => {
   try {
-    const { sessionId, userId, videoId, videoTitle, deviceInfo, networkType, cdnEndpoint } = req.body;
+    const { sessionId, userId, videoId, videoTitle, deviceInfo, networkType, cdnEndpoint, applicationId } = req.body;
     const userAgent = req.get('user-agent') || 'unknown';
     const ip = req.ip || req.connection.remoteAddress || 'unknown';
 
@@ -20,6 +20,7 @@ router.post('/session/start', async (req, res) => {
 
     const newSession = new QoESession({
       sessionId,
+      applicationId: applicationId || null,
       userId: finalUserId,
       videoId,
       videoTitle,
@@ -57,7 +58,7 @@ router.post('/session/start', async (req, res) => {
 router.post('/session/:sessionId/event', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { userId, videoId, eventType, eventData } = req.body;
+    const { userId, videoId, eventType, eventData, applicationId } = req.body;
     const userAgent = req.get('user-agent') || 'unknown';
     const ip = req.ip || req.connection.remoteAddress || 'unknown';
 
@@ -91,6 +92,7 @@ router.post('/session/:sessionId/event', async (req, res) => {
     // Create the event document
     const newEvent = new QoEEvent({
       sessionId,
+      applicationId: applicationId || null,
       userId: finalUserId,
       videoId,
       eventType,
@@ -344,14 +346,15 @@ router.get('/session/:sessionId', async (req, res) => {
 // ✅ GET - Get overall analytics WITH DATE RANGE FILTERING
 router.get('/analytics', async (req, res) => {
   try {
-    const { startDate, endDate, userId, videoId, error } = req.query;
+    const { startDate, endDate, userId, videoId, error, applicationId } = req.query;
 
     console.log('📊 Fetching analytics with filters:', {
       startDate,
       endDate,
       userId,
       videoId,
-      error
+      error,
+      applicationId
     });
 
     // Build date filter
@@ -419,6 +422,7 @@ router.get('/analytics', async (req, res) => {
 
     if (userId) query.userId = userId;
     if (videoId) query.videoId = videoId;
+    if (applicationId) query.applicationId = applicationId;
     if (error) {
       query['playbackErrors.message'] = error;
     }
@@ -698,7 +702,7 @@ router.get('/analytics', async (req, res) => {
 router.get('/video/:videoId/analytics', async (req, res) => {
   try {
     const { videoId } = req.params;
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, applicationId } = req.query;
 
     let dateFilter = {};
 
@@ -723,11 +727,17 @@ router.get('/video/:videoId/analytics', async (req, res) => {
       };
     }
 
-    const sessions = await QoESession.find({
+    const query = {
       videoId,
       status: { $in: ['completed', 'abandoned'] },
       ...dateFilter
-    });
+    };
+
+    if (applicationId) {
+      query.applicationId = applicationId;
+    }
+
+    const sessions = await QoESession.find(query);
 
     if (sessions.length === 0) {
       return res.json({

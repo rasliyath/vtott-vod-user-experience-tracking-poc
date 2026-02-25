@@ -79,6 +79,15 @@ const QoETrackerDemo = () => {
   const [networkErrors, setNetworkErrors] = useState([]);
   const [offlineQueuedEvents, setOfflineQueuedEvents] = useState(0);
   const [showGuide, setShowGuide] = useState(false);
+  const [applicationId, setApplicationId] = useState(() => {
+    return localStorage.getItem('qoe_application_id') || '';
+  });
+  const applicationIdRef = useRef(applicationId);
+
+  // Update ref when applicationId changes
+  useEffect(() => {
+    applicationIdRef.current = applicationId;
+  }, [applicationId]);
 
   // ============= DEVICE FINGERPRINTING FOR USER TRACKING =============
   // OLD CODE: Sample users for manual selection (commented for future use)
@@ -287,6 +296,7 @@ const QoETrackerDemo = () => {
 
     try {
       const payload = {
+        applicationId: applicationIdRef.current || null,
         userId: selectedUserId,
         videoId: videoIdRef.current,
         eventType: eventType,
@@ -350,6 +360,7 @@ const QoETrackerDemo = () => {
 
       const payload = {
         sessionId: newSessionId,
+        applicationId: applicationIdRef.current || null,
         userId: selectedUserId,
         videoId: videoIdRef.current,
         videoTitle: `${playerTypeRef.current} Video`,
@@ -1580,7 +1591,15 @@ useEffect(() => {
       setSyncStatus("syncing");
       console.log("📊 Fetching analytics from database...");
 
-      const response = await fetch(`${apiUrl}/analytics`);
+      const params = new URLSearchParams();
+      if (applicationIdRef.current) {
+        params.append('applicationId', applicationIdRef.current);
+      }
+
+      const queryString = params.toString();
+      const url = `${apiUrl}/analytics${queryString ? `?${queryString}` : ''}`;
+      
+      const response = await fetch(url);
       const data = await response.json();
 
       console.log("📈 Video Analytics:", data);
@@ -1867,6 +1886,44 @@ useEffect(() => {
               >
                 {selectedUserId || "Generating..."}
               </div>
+            </div>
+
+            <div
+              style={{
+                background: "#334155",
+                padding: "8px 12px",
+                borderRadius: "6px",
+                border: "1px solid #475569",
+                flex: "1 1 150px",
+              }}
+            >
+              <div
+                style={{
+                  color: "#94a3b8",
+                  fontSize: "10px",
+                  textTransform: "uppercase",
+                }}
+              >
+                Application ID
+              </div>
+              <input
+                type="text"
+                value={applicationId}
+                onChange={(e) => {
+                  setApplicationId(e.target.value);
+                  localStorage.setItem('qoe_application_id', e.target.value);
+                }}
+                placeholder="Enter App ID (optional)"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#fff",
+                  fontSize: "12px",
+                  width: "100%",
+                  outline: "none",
+                  fontFamily: "monospace",
+                }}
+              />
             </div>
           </div>
         </div>

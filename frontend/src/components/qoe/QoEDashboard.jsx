@@ -21,11 +21,13 @@ const QoEDashboard = () => {
   const [selectedVideo, setSelectedVideo] = useState('all');
   const [filters, setFilters] = useState({
     userId: '',
-    videoId: ''
+    videoId: '',
+    applicationId: ''
   });
   const [appliedFilters, setAppliedFilters] = useState({
     userId: '',
-    videoId: ''
+    videoId: '',
+    applicationId: ''
   });
   const API_BASE_URL = import.meta.env.VITE_API_BASE || '';
 
@@ -45,7 +47,8 @@ const QoEDashboard = () => {
     startDate = dateRange.start,
     endDate = dateRange.end,
     userId = filters.userId,
-    videoId = filters.videoId
+    videoId = filters.videoId,
+    applicationId = filters.applicationId
   ) => {
     try {
       setLoading(true);
@@ -60,12 +63,13 @@ const QoEDashboard = () => {
       // Use the passed values instead of reading from state
       if (userId && userId !== 'all') params.append('userId', userId);
       if (videoId && videoId !== 'all') params.append('videoId', videoId);
+      if (applicationId) params.append('applicationId', applicationId);
 
       const queryString = params.toString();
       const url = `${API_BASE_URL}/api/qoe/analytics${queryString ? `?${queryString}` : ''}`;
 
       console.log('📊 Fetching analytics from:', url);
-      console.log('📅 Filters applied:', { startDate, endDate, userId, videoId });
+      console.log('📅 Filters applied:', { startDate, endDate, userId, videoId, applicationId });
 
       const response = await fetch(url);
       const result = await response.json();
@@ -73,7 +77,7 @@ const QoEDashboard = () => {
       if (result.success) {
         setDashboardData(result.data);
         setAppliedDateRange({ start: startDate, end: endDate });
-        setAppliedFilters({ userId, videoId });
+        setAppliedFilters({ userId, videoId, applicationId });
         console.log('✅ Analytics fetched:', result.data);
         console.log('📊 Date range in response:', result.data.dateRange);
       } else {
@@ -110,7 +114,7 @@ const QoEDashboard = () => {
     }
 
     console.log('✅ Applying filters:', { dateRange, filters });
-    fetchDashboardData(dateRange.start, dateRange.end, filters.userId, filters.videoId);
+    fetchDashboardData(dateRange.start, dateRange.end, filters.userId, filters.videoId, filters.applicationId);
   };
 
   // ==================== HANDLE CLEAR FILTERS ====================
@@ -119,12 +123,12 @@ const QoEDashboard = () => {
 
     // 1. Update states for UI (async)
     setDateRange({ start: today, end: today });
-    setFilters({ userId: '', videoId: '' });
+    setFilters({ userId: '', videoId: '', applicationId: '' });
     setAppliedDateRange({ start: today, end: today });
-    setAppliedFilters({ userId: '', videoId: '' });
+    setAppliedFilters({ userId: '', videoId: '', applicationId: '' });
 
     // 2. Fetch data immediately with explicit "empty" values to avoid race condition
-    fetchDashboardData(today, today, '', '');
+    fetchDashboardData(today, today, '', '', '');
   };
 
   // ==================== HANDLE EXPORT ====================
@@ -339,6 +343,18 @@ const QoEDashboard = () => {
                 <p className="text-[9px] text-yellow-500/80 mt-1 italic">Clear video filter to enable user selection</p>
               )}
             </div>
+
+            {/* NEW: Application ID Filter */}
+            <div className="space-y-1 text-white">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Filter by Application</label>
+              <input
+                type="text"
+                value={filters.applicationId}
+                onChange={(e) => setFilters({ ...filters, applicationId: e.target.value })}
+                placeholder="Enter Application ID"
+                className="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-slate-400"
+              />
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3 mt-6 pt-6 border-t border-slate-600/50">
@@ -356,7 +372,7 @@ const QoEDashboard = () => {
             </button>
 
             {/* Badge showing applied filters */}
-            {(appliedDateRange.start || appliedDateRange.end || appliedFilters.userId || appliedFilters.videoId) && (
+            {(appliedDateRange.start || appliedDateRange.end || appliedFilters.userId || appliedFilters.videoId || appliedFilters.applicationId) && (
               <div className="flex-1 sm:flex-none flex items-center gap-2 px-4 py-2 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-400 text-xs font-medium">
                 <Zap size={14} />
                 Filters Active

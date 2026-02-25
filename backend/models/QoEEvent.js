@@ -6,6 +6,11 @@ const qoeEventSchema = new mongoose.Schema({
     index: true,
     required: true
   },
+  applicationId: {
+    type: String,
+    index: true,
+    default: null
+  },
   userId: {
     type: String,
     default: 'anonymous'
