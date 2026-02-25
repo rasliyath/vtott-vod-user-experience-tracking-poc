@@ -7,9 +7,11 @@ const QoEEvent = require('../models/QoEEvent');
 // ✅ POST - Start new session
 router.post('/session/start', async (req, res) => {
   try {
-    const { sessionId, userId, videoId, videoTitle, deviceInfo, networkType, cdnEndpoint, applicationId } = req.body;
+    const { sessionId, userId, videoId, videoTitle, deviceInfo, networkType, cdnEndpoint, applicationId, clientIp } = req.body;
     const userAgent = req.get('user-agent') || 'unknown';
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    
+    // Use client IP from frontend if available, otherwise fall back to server-detected IP
+    const ip = clientIp || req.ip || req.connection.remoteAddress || 'unknown';
 
     // Generate unique ID from IP and User Agent if missing
     let finalUserId = userId;

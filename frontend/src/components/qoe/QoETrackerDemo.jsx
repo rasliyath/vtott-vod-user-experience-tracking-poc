@@ -181,6 +181,18 @@ const QoETrackerDemo = () => {
 
   const apiUrl = `${import.meta.env.VITE_API_BASE}/api/qoe`;
 
+  // Get client IP using a free IP detection service
+  const getClientIP = async () => {
+    try {
+      const response = await fetch('https://api.ipify.org?format=json');
+      const data = await response.json();
+      return data.ip;
+    } catch (error) {
+      console.warn('Could not fetch IP:', error);
+      return null;
+    }
+  };
+
   // ============= OFFLINE EVENT QUEUE MANAGEMENT =============
   const storeEventOffline = async (sessionId, payload) => {
     try {
@@ -374,15 +386,20 @@ const QoETrackerDemo = () => {
         playerType: playerTypeRef.current
       };
 
+      const clientIP = await getClientIP();
       console.log("🎬 Starting Session:", {
         sessionId: newSessionId,
+        clientIP,
         ...payload,
       });
 
       const response = await fetch(`${apiUrl}/session/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          clientIp: clientIP
+        }),
       });
 
       if (response.ok) {
