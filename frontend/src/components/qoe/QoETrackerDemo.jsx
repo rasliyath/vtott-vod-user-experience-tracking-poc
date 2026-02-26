@@ -317,6 +317,7 @@ const QoETrackerDemo = () => {
           timestamp: new Date().toISOString(),
           userAgent: navigator.userAgent,
         },
+        timezone: deviceFingerprint.details.timezone
       };
 
       console.log(`📤 Recording ${eventType}:`, eventData);
@@ -383,7 +384,9 @@ const QoETrackerDemo = () => {
         },
         networkType: getNetworkType(),
         cdnEndpoint: await getCDNEndpoint(),
-        playerType: playerTypeRef.current
+        playerType: playerTypeRef.current,
+        timezone: deviceFingerprint.details.timezone,
+        timezoneOffset: new Date().getTimezoneOffset()
       };
 
       const clientIP = await getClientIP();

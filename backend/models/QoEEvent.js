@@ -57,6 +57,12 @@ const qoeEventSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
     index: true
+  },
+
+  // Timezone information
+  timezone: {
+    type: String,
+    default: null
   }
 });
 

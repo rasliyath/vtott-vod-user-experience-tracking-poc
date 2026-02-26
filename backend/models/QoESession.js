@@ -55,6 +55,16 @@ const qoeSessionSchema = new mongoose.Schema({
     default: 'youtube'
   },
 
+  // ==================== TIMEZONE ====================
+  timezone: {
+    type: String,
+    default: null
+  },
+  timezoneOffset: {
+    type: Number,
+    default: null
+  },
+
   // ==================== TIMING ====================
   startTime: {
     type: Date,

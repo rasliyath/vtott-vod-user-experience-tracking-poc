@@ -7,7 +7,7 @@ const QoEEvent = require('../models/QoEEvent');
 // ✅ POST - Start new session
 router.post('/session/start', async (req, res) => {
   try {
-    const { sessionId, userId, videoId, videoTitle, deviceInfo, networkType, cdnEndpoint, applicationId, clientIp } = req.body;
+    const { sessionId, userId, videoId, videoTitle, deviceInfo, networkType, cdnEndpoint, applicationId, clientIp, timezone, timezoneOffset } = req.body;
     const userAgent = req.get('user-agent') || 'unknown';
     
     // Use client IP from frontend if available, otherwise fall back to server-detected IP
@@ -34,7 +34,9 @@ router.post('/session/start', async (req, res) => {
       userAgent: req.get('user-agent'),
       ipAddress: ip,
       status: 'active',
-      playerType: req.body.playerType || 'youtube'
+      playerType: req.body.playerType || 'youtube',
+      timezone: timezone || null,
+      timezoneOffset: timezoneOffset || null
     });
 
     const savedSession = await newSession.save();
@@ -60,7 +62,7 @@ router.post('/session/start', async (req, res) => {
 router.post('/session/:sessionId/event', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { userId, videoId, eventType, eventData, applicationId } = req.body;
+    const { userId, videoId, eventType, eventData, applicationId, timezone } = req.body;
     const userAgent = req.get('user-agent') || 'unknown';
     const ip = req.ip || req.connection.remoteAddress || 'unknown';
 
@@ -98,7 +100,8 @@ router.post('/session/:sessionId/event', async (req, res) => {
       userId: finalUserId,
       videoId,
       eventType,
-      eventData
+      eventData,
+      timezone: timezone || null
     });
 
     await newEvent.save();
