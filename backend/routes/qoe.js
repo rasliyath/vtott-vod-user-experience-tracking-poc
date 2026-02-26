@@ -351,7 +351,7 @@ router.get('/session/:sessionId', async (req, res) => {
 // ✅ GET - Get overall analytics WITH DATE RANGE FILTERING
 router.get('/analytics', async (req, res) => {
   try {
-    const { startDate, endDate, userId, videoId, error, applicationId } = req.query;
+    const { startDate, endDate, userId, videoId, error, applicationId, timezone } = req.query;
 
     console.log('📊 Fetching analytics with filters:', {
       startDate,
@@ -359,7 +359,8 @@ router.get('/analytics', async (req, res) => {
       userId,
       videoId,
       error,
-      applicationId
+      applicationId,
+      timezone
     });
 
     // Build date filter
@@ -430,6 +431,9 @@ router.get('/analytics', async (req, res) => {
     if (applicationId) query.applicationId = applicationId;
     if (error) {
       query['playbackErrors.message'] = error;
+    }
+    if (timezone) {
+      query.timezone = timezone;
     }
 
     console.log('🔍 Query:', JSON.stringify(query, null, 2));
@@ -518,6 +522,7 @@ router.get('/analytics', async (req, res) => {
 
     // User List
     const userMap = {};
+    const timezoneMap = {};
     sessions.forEach(s => {
       if (!userMap[s.userId]) {
         userMap[s.userId] = {
@@ -539,7 +544,27 @@ router.get('/analytics', async (req, res) => {
       if (new Date(s.startTime) > new Date(u.lastActive)) {
         u.lastActive = s.startTime;
       }
+
+      // Collect unique timezones from sessions
+      if (s.timezone) {
+        timezoneMap[s.timezone] = (timezoneMap[s.timezone] || 0) + 1;
+      }
     });
+
+    // Also collect timezones from ALL QoEEvents (not filtered by date)
+    try {
+      const eventTimezones = await QoEEvent.distinct('timezone');
+      console.log('📍 Timezones from events:', eventTimezones);
+      if (eventTimezones && Array.isArray(eventTimezones)) {
+        eventTimezones.forEach(tz => {
+          if (tz) timezoneMap[tz] = (timezoneMap[tz] || 0) + 1;
+        });
+      }
+    } catch (e) {
+      console.error('❌ Error fetching timezones from events:', e);
+    }
+
+    console.log('📍 All collected timezones:', JSON.stringify(timezoneMap));
 
     const userList = Object.values(userMap).map(u => ({
       userId: u.userId,
@@ -677,7 +702,8 @@ router.get('/analytics', async (req, res) => {
       liveSessions: activeSessions,
       availableFilters: {
         users: userList.map(u => ({ id: u.userId, label: u.userId })),
-        videos: videoList.map(v => ({ id: v.videoId, label: v.title }))
+        videos: videoList.map(v => ({ id: v.videoId, label: v.title })),
+        timezones: Object.keys(timezoneMap)
       },
       dateRange: {
         from: startDate || 'All time',

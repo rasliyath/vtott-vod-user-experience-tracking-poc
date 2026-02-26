@@ -221,6 +221,7 @@ qoeSessionSchema.index({ videoId: 1, startTime: -1 });
 qoeSessionSchema.index({ userId: 1, startTime: -1 });
 qoeSessionSchema.index({ 'recordedErrors.type': 1 });
 qoeSessionSchema.index({ 'recordedCrashes.type': 1 });
+qoeSessionSchema.index({ timezone: 1 });
 
 // ==================== VIRTUALS ====================
 qoeSessionSchema.virtual('totalRecordedIssues').get(function () {

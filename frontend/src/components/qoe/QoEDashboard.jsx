@@ -22,12 +22,14 @@ const QoEDashboard = () => {
   const [filters, setFilters] = useState({
     userId: '',
     videoId: '',
-    applicationId: ''
+    applicationId: '',
+    timezone: ''
   });
   const [appliedFilters, setAppliedFilters] = useState({
     userId: '',
     videoId: '',
-    applicationId: ''
+    applicationId: '',
+    timezone: ''
   });
   const API_BASE_URL = import.meta.env.VITE_API_BASE || '';
 
@@ -48,7 +50,8 @@ const QoEDashboard = () => {
     endDate = dateRange.end,
     userId = filters.userId,
     videoId = filters.videoId,
-    applicationId = filters.applicationId
+    applicationId = filters.applicationId,
+    timezone = filters.timezone
   ) => {
     try {
       setLoading(true);
@@ -64,6 +67,7 @@ const QoEDashboard = () => {
       if (userId && userId !== 'all') params.append('userId', userId);
       if (videoId && videoId !== 'all') params.append('videoId', videoId);
       if (applicationId) params.append('applicationId', applicationId);
+      if (timezone) params.append('timezone', timezone);
 
       const queryString = params.toString();
       const url = `${API_BASE_URL}/api/qoe/analytics${queryString ? `?${queryString}` : ''}`;
@@ -77,8 +81,9 @@ const QoEDashboard = () => {
       if (result.success) {
         setDashboardData(result.data);
         setAppliedDateRange({ start: startDate, end: endDate });
-        setAppliedFilters({ userId, videoId, applicationId });
+        setAppliedFilters({ userId, videoId, applicationId, timezone });
         console.log('✅ Analytics fetched:', result.data);
+        console.log('📊 Available filters:', result.data.availableFilters);
         console.log('📊 Date range in response:', result.data.dateRange);
       } else {
         setError('Failed to fetch dashboard data: ' + result.error);
@@ -114,7 +119,7 @@ const QoEDashboard = () => {
     }
 
     console.log('✅ Applying filters:', { dateRange, filters });
-    fetchDashboardData(dateRange.start, dateRange.end, filters.userId, filters.videoId, filters.applicationId);
+    fetchDashboardData(dateRange.start, dateRange.end, filters.userId, filters.videoId, filters.applicationId, filters.timezone);
   };
 
   // ==================== HANDLE CLEAR FILTERS ====================
@@ -123,12 +128,12 @@ const QoEDashboard = () => {
 
     // 1. Update states for UI (async)
     setDateRange({ start: today, end: today });
-    setFilters({ userId: '', videoId: '', applicationId: '' });
+    setFilters({ userId: '', videoId: '', applicationId: '', timezone: '' });
     setAppliedDateRange({ start: today, end: today });
-    setAppliedFilters({ userId: '', videoId: '', applicationId: '' });
+    setAppliedFilters({ userId: '', videoId: '', applicationId: '', timezone: '' });
 
     // 2. Fetch data immediately with explicit "empty" values to avoid race condition
-    fetchDashboardData(today, today, '', '', '');
+    fetchDashboardData(today, today, '', '', '', '');
   };
 
   // ==================== HANDLE EXPORT ====================
@@ -355,6 +360,25 @@ const QoEDashboard = () => {
                 className="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-slate-400"
               />
             </div>
+
+            {/* NEW: Timezone Filter */}
+            <div className="space-y-1 text-white">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Filter by Timezone</label>
+              <select
+                value={filters.timezone}
+                onChange={(e) => setFilters({ ...filters, timezone: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-600 border border-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer hover:border-slate-400 transition-all"
+              >
+                <option value="">All Timezones</option>
+                {dashboardData.availableFilters?.timezones && dashboardData.availableFilters.timezones.length > 0 ? (
+                  dashboardData.availableFilters.timezones.map(tz => (
+                    <option key={tz} value={tz}>{tz}</option>
+                  ))
+                ) : (
+                  <option value="" disabled>No timezones found</option>
+                )}
+              </select>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3 mt-6 pt-6 border-t border-slate-600/50">
@@ -372,7 +396,7 @@ const QoEDashboard = () => {
             </button>
 
             {/* Badge showing applied filters */}
-            {(appliedDateRange.start || appliedDateRange.end || appliedFilters.userId || appliedFilters.videoId || appliedFilters.applicationId) && (
+            {(appliedDateRange.start || appliedDateRange.end || appliedFilters.userId || appliedFilters.videoId || appliedFilters.applicationId || appliedFilters.timezone) && (
               <div className="flex-1 sm:flex-none flex items-center gap-2 px-4 py-2 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-400 text-xs font-medium">
                 <Zap size={14} />
                 Filters Active
